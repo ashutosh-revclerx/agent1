@@ -442,28 +442,17 @@ RETURN ONLY JSON:"""
 
             logger.info(f"[Batch]{user_log} Fetched {len(metrics)} metrics")
 
-            # ===== ACTIVE: Gemma3 metadata =====
+            # LLM metadata (Gemini primary, OpenAI/Gemma3 fallback)
             llm_metadata = {
                 "window_start": start.isoformat(),
                 "window_end": end.isoformat(),
                 "metrics_count": len(metrics),
                 "timezone": "IST",
                 "user_id": self.user_id,
-                "llm_provider": "gemma3",
-                "llm_url": os.getenv("LLM_URL", ""),
-                "llm_model": os.getenv("LLM_MODEL", "gemma3:1b"),
+                "llm_provider": "gemini",
+                "gemini_model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+                "google_api_key_set": bool(os.getenv("GOOGLE_API_KEY", "").strip()),
             }
-
-            # ===== COMMENTED: OpenAI metadata =====
-            # llm_metadata = {
-            #     "window_start": start.isoformat(),
-            #     "window_end": end.isoformat(),
-            #     "metrics_count": len(metrics),
-            #     "timezone": "IST",
-            #     "user_id": self.user_id,
-            #     "llm_provider": "openai",
-            #     "openai_model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
-            # }
 
             analysis = await self.call_llm(
                 self.build_prompt(metrics, start, end),
@@ -623,15 +612,11 @@ async def lifespan(app: FastAPI):
     logger.info(f"[Config] Current Time: {format_ist(now_ist())}")
     logger.info(f"[Config] Prometheus: {PROM_URL or 'NOT SET'}")
     
-    # ===== ACTIVE: Gemma3 logging =====
-    logger.info(f"[Config] LLM Provider: Gemma3")
-    logger.info(f"[Config] LLM_URL: {os.getenv('LLM_URL', 'NOT SET')}")
-    logger.info(f"[Config] LLM_MODEL: {os.getenv('LLM_MODEL', 'gemma3:1b')}")
-    
-    # ===== COMMENTED: OpenAI logging =====
-    # logger.info(f"[Config] LLM Provider: OpenAI")
-    # logger.info(f"[Config] OPENAI_MODEL: {os.getenv('OPENAI_MODEL', 'gpt-4.1-mini')}")
-    # logger.info(f"[Config] OPENAI_API_KEY: {'✅ Set' if (os.getenv('OPENAI_API_KEY') or '').strip() else '❌ NOT SET'}")
+    # LLM Configuration Logging
+    logger.info(f"[Config] LLM Provider: Gemini (Primary)")
+    logger.info(f"[Config] GEMINI_MODEL: {os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')}")
+    logger.info(f"[Config] GOOGLE_API_KEY: {'✅ Set' if (os.getenv('GOOGLE_API_KEY') or '').strip() else '❌ NOT SET'}")
+    logger.info(f"[Config] Fallback: Gemma3 (Local)")
     
     logger.info(f"[Config] MongoDB: {MONGO_URI[:30] if MONGO_URI else 'NOT SET'}...")
     logger.info(f"[Config] Batch Interval: {BATCH_INTERVAL_MINUTES} min")

@@ -7,7 +7,7 @@ uvicorn>=0.23.0
 prometheus-fastapi-instrumentator>=7.0.0
 httpx>=0.24.0
 langfuse
-openai>=1.0.0
+google-genai
 PyJWT
 argon2-cffi
 email-validator

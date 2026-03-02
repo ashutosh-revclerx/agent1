@@ -11,17 +11,17 @@ load_dotenv(override=True)
 PROM_URL = os.getenv("PROM_URL", "http://localhost:9090")
 
 # MongoDB
-MONGO_URI = os.getenv("MONGO_URI")
-DB_NAME = os.getenv("MONGO_DB", "observability")
+MONGO_URI = os.getenv("MONGO_URI") or os.getenv("MONGODB_URI")
+DB_NAME = os.getenv("MONGO_DB") or os.getenv("MONGODB_DATABASE", "observability")
 MAX_DOCS = int(os.getenv("MAX_DOCS", "1000"))
-
-# OpenAI (Primary LLM)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 
 # LLM (gemma3:1b - Fallback)
 LLM_URL = os.getenv("LLM_URL")
 LLM_MODEL = os.getenv("LLM_MODEL", "gemma3:1b")
+
+# Gemini (New Primary)
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip()
 
 # Monitoring / Batch job
 # NOTE: interval is in seconds. Default = 30 minutes.

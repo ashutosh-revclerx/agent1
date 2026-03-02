@@ -1,11 +1,10 @@
-from __future__ import annotations
-
 import os
 import requests
 from typing import Optional, Tuple
 from datetime import datetime
 
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
 from app.services.langfuse_service import (
     get_langfuse_client,
@@ -25,26 +24,22 @@ def ask_llm(
 ) -> Optional[Tuple[str, int]]:
     """
     LLM call with optional Langfuse tracing.
-    Primary: OpenAI (gpt-4o-mini or configured model)
-    Fallback: Gemma3 (via Ollama/LM Studio)
+    Primary: Gemini (via Google GenAI)
+    Fallback: OpenAI / Gemma3
     
     Configuration:
-      Primary (OpenAI):
-        - OPENAI_API_KEY: Your OpenAI API key
-        - OPENAI_MODEL: Model name (default: gpt-4o-mini)
-      
-      Fallback (Gemma3):
-        - LLM_URL: Ollama/LM Studio endpoint
-        - LLM_MODEL: Model name (default: gemma3:1b)
+      Primary (Gemini):
+        - GOOGLE_API_KEY: Your Google API key
+        - GEMINI_MODEL: Model name (default: gemini-2.0-flash)
     
     Returns: (response_text, total_tokens)
     """
 
-    # Try OpenAI first
+    # Try Gemini first
     try:
-        return _call_openai(prompt, trace_name, metadata, session_id)
+        return _call_gemini(prompt, trace_name, metadata, session_id)
     except Exception as e:
-        logger.warning(f"[LLM] OpenAI failed: {e}. Falling back to Gemma3...")
+        logger.warning(f"[LLM] Gemini failed: {e}. Falling back to Gemma3...")
         
         # Fallback to Gemma3
         try:
@@ -54,53 +49,53 @@ def ask_llm(
             return None, 0
 
 
-def _call_openai(
+def _call_gemini(
     prompt: str,
     trace_name: str = "LLM Call",
     metadata: dict | None = None,
     session_id: Optional[str] = None,
 ) -> Optional[Tuple[str, int]]:
     """
-    Call OpenAI API (Primary LLM)
+    Call Google Gemini API (Primary LLM)
     """
     from app.core import config
     
-    api_key = config.OPENAI_API_KEY
-    model = config.OPENAI_MODEL
+    api_key = config.GOOGLE_API_KEY
+    model = config.GEMINI_MODEL
     
     if not api_key:
-        raise ValueError("OPENAI_API_KEY not set in environment")
+        raise ValueError("GOOGLE_API_KEY not set in environment")
     
     logger.info(
-        f"[LLM] OpenAI model={model} | timeout={TIMEOUT_S}s | "
+        f"[LLM] Gemini model={model} | timeout={TIMEOUT_S}s | "
         f"prompt_chars={len(prompt or '')} words={len((prompt or '').split())}"
     )
     
-    client = OpenAI(api_key=api_key)
+    client = genai.Client(api_key=api_key)
     
-    def _call_openai_api() -> tuple[str, int, int, float]:
+    def _call_gemini_api() -> tuple[str, int, int, float]:
         """
-        OpenAI API call.
+        Gemini API call.
         Returns: (text, input_tokens, output_tokens, latency_ms)
         """
         start_time = datetime.utcnow()
         
-        response = client.chat.completions.create(
+        response = client.models.generate_content(
             model=model,
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.2,
-            timeout=TIMEOUT_S
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+            )
         )
         
         latency_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
         
-        text = response.choices[0].message.content.strip() if response.choices else ""
+        text = response.text.strip() if response.text else ""
         
-        # OpenAI token counts
-        input_tokens = response.usage.prompt_tokens if response.usage else 0
-        output_tokens = response.usage.completion_tokens if response.usage else 0
+        # Gemini usage metadata
+        usage = response.usage_metadata
+        input_tokens = usage.prompt_token_count if usage else 0
+        output_tokens = usage.candidates_token_count if usage else 0
         
         return text, input_tokens, output_tokens, latency_ms
     
@@ -115,7 +110,7 @@ def _call_openai(
                 metadata={
                     **(metadata or {}),
                     "model": model,
-                    "provider": "openai",
+                    "provider": "gemini",
                     "timeout_s": TIMEOUT_S,
                     **({"session_id": session_id} if session_id else {}),
                 },
@@ -129,13 +124,13 @@ def _call_openai(
                     ) as generation:
                         try:
                             logger.info(
-                                f"[LLM] Calling OpenAI..."
+                                f"[LLM] Calling Gemini..."
                                 + (f" (session: {session_id})" if session_id else "")
                             )
                             
-                            text, in_tok, out_tok, latency_ms = _call_openai_api()
+                            text, in_tok, out_tok, latency_ms = _call_gemini_api()
                             
-                            logger.info(f"[LLM] OpenAI response received ({latency_ms:.0f}ms)")
+                            logger.info(f"[LLM] Gemini response received ({latency_ms:.0f}ms)")
                             
                             total_tokens = in_tok + out_tok
                             
@@ -152,7 +147,7 @@ def _call_openai(
                             return text, total_tokens
                         
                         except Exception as e:
-                            logger.error(f"[LLM] OpenAI Error: {e}", exc_info=True)
+                            logger.error(f"[LLM] Gemini Error: {e}", exc_info=True)
                             generation.update(output=f"Error: {str(e)}", metadata={"error": True})
                             root_span.update(output={"response": False, "error": str(e)})
                             raise
@@ -163,19 +158,18 @@ def _call_openai(
     
     # -------- non-traced path --------
     try:
-        logger.info(f"[LLM] Calling OpenAI (no tracing)...")
+        logger.info(f"[LLM] Calling Gemini (no tracing)...")
         
-        text, in_tok, out_tok, latency_ms = _call_openai_api()
+        text, in_tok, out_tok, latency_ms = _call_gemini_api()
         
-        logger.info(f"[LLM] OpenAI response received ({latency_ms:.0f}ms)")
+        logger.info(f"[LLM] Gemini response received ({latency_ms:.0f}ms)")
         
         total_tokens = in_tok + out_tok
         return text, total_tokens
     
     except Exception as e:
-        logger.error(f"[LLM] OpenAI Error: {e}", exc_info=True)
+        logger.error(f"[LLM] Gemini Error: {e}", exc_info=True)
         raise
-
 
 def _call_gemma3(
     prompt: str,
