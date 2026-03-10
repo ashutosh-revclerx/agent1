@@ -32,7 +32,7 @@ def get_watched_users(current_user=Depends(get_current_user)):
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
-    docs = list(db.langfuse_watched_users.find({}, {"_id": 0}))
+    docs = list(db.langfuse_watched_users.find({"added_by": current_user.id}, {"_id": 0}))
     return {"users": docs}
 
 
@@ -64,10 +64,10 @@ def remove_watched_user(langfuse_user_id: str, current_user=Depends(get_current_
         raise HTTPException(status_code=503, detail="Database unavailable")
 
     result = db.langfuse_watched_users.delete_one(
-        {"langfuse_user_id": langfuse_user_id}
+        {"langfuse_user_id": langfuse_user_id, "added_by": current_user.id}
     )
     if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Watched user not found")
+        raise HTTPException(status_code=404, detail="Watched user not found or you don't have permission to remove it")
     return {"message": f"Stopped watching {langfuse_user_id}"}
 
 
@@ -83,10 +83,26 @@ def get_stats(
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
+    watching_docs = list(db.langfuse_watched_users.find({"added_by": current_user.id}))
+    watched_ids = [doc["langfuse_user_id"] for doc in watching_docs]
+
+    if not watched_ids:
+        # If the user isn't watching anyone, return empty stats without querying traces
+        return {
+            "total_traces": 0, "total_input_tokens": 0, "total_output_tokens": 0,
+            "total_tokens": 0, "total_cost_usd": 0.0, "avg_latency_s": 0.0,
+            "error_count": 0, "models_used": {}, "active_users": {}, "hours_window": hours
+        }
+
     since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     query = {"timestamp": {"$gte": since}}
+    
     if langfuse_user_id:
+        if langfuse_user_id not in watched_ids:
+            raise HTTPException(status_code=403, detail="You are not authorized to view stats for this user ID")
         query["langfuse_user_id"] = langfuse_user_id
+    else:
+        query["langfuse_user_id"] = {"$in": watched_ids}
 
     traces = list(db.langfuse_traces.find(query, {"_id": 0}))
 
@@ -131,10 +147,21 @@ def get_traces(
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
+    watching_docs = list(db.langfuse_watched_users.find({"added_by": current_user.id}))
+    watched_ids = [doc["langfuse_user_id"] for doc in watching_docs]
+
+    if not watched_ids:
+        return {"traces": [], "count": 0}
+
     since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     query = {"timestamp": {"$gte": since}}
+
     if langfuse_user_id:
+        if langfuse_user_id not in watched_ids:
+            raise HTTPException(status_code=403, detail="You are not authorized to view traces for this user ID")
         query["langfuse_user_id"] = langfuse_user_id
+    else:
+        query["langfuse_user_id"] = {"$in": watched_ids}
 
     traces = list(
         db.langfuse_traces.find(query, {"_id": 0})
@@ -157,10 +184,23 @@ def get_rca_results(
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
+    watching_docs = list(db.langfuse_watched_users.find({"added_by": current_user.id}))
+    watched_ids = [doc["langfuse_user_id"] for doc in watching_docs]
+
+    if not watched_ids:
+        return {"rca": [], "count": 0}
+
     since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     query = {"timestamp": {"$gte": since}}
+
+    # RCA records are sometimes generated generally (incremental) without a langfuse_user_id.
+    # To be secure, we must either only show RCAs tied specifically to the user's watched IDs.
     if langfuse_user_id:
+        if langfuse_user_id not in watched_ids:
+            raise HTTPException(status_code=403, detail="You are not authorized to view RCA for this user ID")
         query["langfuse_user_id"] = langfuse_user_id
+    else:
+        query["langfuse_user_id"] = {"$in": watched_ids}
 
     results = list(
         db.langfuse_rca.find(query, {"_id": 0, "raw_analysis": 0})
@@ -179,6 +219,19 @@ async def run_rca_now(
     """Trigger an on-demand RCA analysis."""
     import asyncio
     from app.services.langfuse_ingestion_service import run_rca_sync
+
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    watching_docs = list(db.langfuse_watched_users.find({"added_by": current_user.id}))
+    watched_ids = [doc["langfuse_user_id"] for doc in watching_docs]
+
+    if not langfuse_user_id:
+        raise HTTPException(status_code=400, detail="You must specify a langfuse_user_id to run an RCA on")
+
+    if langfuse_user_id not in watched_ids:
+        raise HTTPException(status_code=403, detail="You are not authorized to run RCA for this user ID")
 
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, run_rca_sync, hours, langfuse_user_id)

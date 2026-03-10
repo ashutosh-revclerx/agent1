@@ -20,13 +20,24 @@ export default function LangfuseMonitor() {
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [runningRca, setRunningRca] = useState(false);
+  const [isAutoRefresh, setIsAutoRefresh] = useState(true);
 
   // Chat modal
   const [chatOpen, setChatOpen] = useState(false);
   const [activeRca, setActiveRca] = useState(null);
 
   useEffect(() => { fetchWatchedUsers(); }, []);
-  useEffect(() => { fetchData(); }, [hours, selectedUser]);
+  
+  useEffect(() => { 
+    fetchData(true); 
+    let interval;
+    if (isAutoRefresh) {
+      interval = setInterval(() => {
+        fetchData(false);
+      }, 120000); // 2 minutes
+    }
+    return () => clearInterval(interval);
+  }, [hours, selectedUser, isAutoRefresh]);
 
   const fetchWatchedUsers = async () => {
     try {
@@ -37,8 +48,8 @@ export default function LangfuseMonitor() {
     }
   };
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       const [statsRes, tracesRes, rcaRes] = await Promise.all([
         api.getLangfuseStats(hours, selectedUser || null),
@@ -51,7 +62,7 @@ export default function LangfuseMonitor() {
     } catch (err) {
       console.error("Failed to fetch Langfuse data", err);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
@@ -136,7 +147,11 @@ export default function LangfuseMonitor() {
             <option value={72}>Last 3d</option>
             <option value={168}>Last 7d</option>
           </select>
-          <button onClick={fetchData}
+          <label className="flex items-center gap-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg px-3 py-2 shadow-sm cursor-pointer hover:bg-gray-50">
+            <input type="checkbox" checked={isAutoRefresh} onChange={e => setIsAutoRefresh(e.target.checked)} className="rounded text-blue-600 focus:ring-blue-500" />
+            Auto-refresh
+          </label>
+          <button onClick={() => fetchData(true)}
             className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm">
             Refresh
           </button>
