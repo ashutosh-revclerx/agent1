@@ -268,6 +268,39 @@ export const api = {
     return fetchJson(`${API_BASE_URL}/langfuse/status`);
   },
 
+  // ============ LANGFUSE MONITOR ============
+
+  async getLangfuseWatchedUsers() {
+    return fetchJson(`${API_BASE_URL}/langfuse-monitor/watched-users`);
+  },
+
+  async addLangfuseWatchedUser(langfuse_user_id, label) {
+    return fetchJson(`${API_BASE_URL}/langfuse-monitor/watched-users`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ langfuse_user_id, label: label || langfuse_user_id }),
+    });
+  },
+
+  async removeLangfuseWatchedUser(langfuse_user_id) {
+    return fetchJson(
+      `${API_BASE_URL}/langfuse-monitor/watched-users/${encodeURIComponent(langfuse_user_id)}`,
+      { method: "DELETE" }
+    );
+  },
+
+  async getLangfuseStats(hours = 24, langfuse_user_id = null) {
+    const params = new URLSearchParams({ hours });
+    if (langfuse_user_id) params.append("langfuse_user_id", langfuse_user_id);
+    return fetchJson(`${API_BASE_URL}/langfuse-monitor/stats?${params}`);
+  },
+
+  async getLangfuseTraces(hours = 24, langfuse_user_id = null, limit = 50) {
+    const params = new URLSearchParams({ hours, limit });
+    if (langfuse_user_id) params.append("langfuse_user_id", langfuse_user_id);
+    return fetchJson(`${API_BASE_URL}/langfuse-monitor/traces?${params}`);
+  },
+
 
 
   async getBatches() {

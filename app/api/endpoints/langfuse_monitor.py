@@ -52,7 +52,7 @@ def add_watched_user(body: WatchedUserIn, current_user=Depends(get_current_user)
         "langfuse_user_id": body.langfuse_user_id,
         "label": body.label or body.langfuse_user_id,
         "added_at": datetime.now(timezone.utc).isoformat(),
-        "added_by": str(current_user.get("_id", "")),
+        "added_by": current_user.id,
     })
     return {"message": f"Now watching {body.langfuse_user_id}"}
 

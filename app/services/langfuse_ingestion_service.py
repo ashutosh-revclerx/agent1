@@ -130,7 +130,7 @@ async def poll_langfuse():
     logger.info("[Langfuse] Polling service started (interval=2min)")
     while True:
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             watched = await loop.run_in_executor(None, _get_watched_user_ids_sync)
 
             if not watched:

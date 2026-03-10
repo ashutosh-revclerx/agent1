@@ -667,6 +667,12 @@ async def lifespan(app: FastAPI):
             db.alert_windows.create_index([("user_id", 1), ("window_start_ist_str", 1), ("window_end_ist_str", 1)], unique=True)
             db.alert_windows.create_index([("user_id", 1), ("window_start_ist_str", 1)])
 
+            # Langfuse ingestion indexes
+            db.langfuse_traces.create_index("trace_id", unique=True)
+            db.langfuse_traces.create_index([("langfuse_user_id", 1), ("timestamp", -1)])
+            db.langfuse_traces.create_index("timestamp")
+            db.langfuse_watched_users.create_index("langfuse_user_id", unique=True)
+
             logger.info("[Database] Indexes created")
         except Exception as e:
             logger.warning(f"[Database] Index warning: {e}")
@@ -674,6 +680,10 @@ async def lifespan(app: FastAPI):
     # Start multi-user monitor manager
     monitor_manager.start()
     await monitor_manager.refresh_monitors()  # Initial refresh
+
+    # Start Langfuse polling task
+    langfuse_poll_task = asyncio.create_task(poll_langfuse())
+    logger.info("[Langfuse] Polling task started")
 
     async def cleanup_sessions():
         while True:
@@ -691,7 +701,12 @@ async def lifespan(app: FastAPI):
 
     logger.info("[Shutdown] Stopping services...")
     await monitor_manager.stop()
+    langfuse_poll_task.cancel()
     cleanup_task.cancel()
+    try:
+        await langfuse_poll_task
+    except asyncio.CancelledError:
+        pass
     try:
         await cleanup_task
     except asyncio.CancelledError:

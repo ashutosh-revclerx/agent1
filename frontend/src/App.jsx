@@ -11,6 +11,7 @@ import RCAResults from "./components/RCAResults";
 import EmailSettings from "./components/EmailSettings";
 import ServerSettings from "./components/ServerSettings";
 import MetricsOverview from "./components/MetricsOverview";
+import LangfuseMonitor from "./components/LangfuseMonitor";
 
 function AppContent() {
   const { user, logout, isAuthenticated } = useAuth();
@@ -20,6 +21,7 @@ function AppContent() {
     { path: "/metrics", name: "Metrics", icon: "📈" },
     { path: "/anomalies", name: "Anomalies", icon: "🚨" },
     { path: "/rca", name: "RCA Results", icon: "🔍" },
+    { path: "/langfuse", name: "LLM Monitor", icon: "🤖" },
   ];
 
   const settingsItems = [
@@ -146,6 +148,7 @@ function AppContent() {
                       <Route path="/rca" element={<RCAResults />} />
                       <Route path="/settings/servers" element={<ServerSettings />} />
                       <Route path="/settings/email" element={<EmailSettings />} />
+                      <Route path="/langfuse" element={<LangfuseMonitor />} />
                     </Routes>
                   </div>
                 </main>
