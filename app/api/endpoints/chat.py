@@ -53,6 +53,7 @@ Provide a helpful, concise answer. Explain technical concepts simply if asked.""
         "AI Chat",
         {"user_message": message.message, **message.context},
         session_id,
+        user.id,
     )
 
     response_text, tokens = result if result else (None, 0)

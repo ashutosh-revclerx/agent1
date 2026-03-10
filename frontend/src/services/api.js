@@ -271,11 +271,11 @@ export const api = {
   // ============ LANGFUSE MONITOR ============
 
   async getLangfuseWatchedUsers() {
-    return fetchJson(`${API_BASE_URL}/langfuse-monitor/watched-users`);
+    return fetchJson(`${API_BASE_URL}/api/langfuse-monitor/watched-users`);
   },
 
   async addLangfuseWatchedUser(langfuse_user_id, label) {
-    return fetchJson(`${API_BASE_URL}/langfuse-monitor/watched-users`, {
+    return fetchJson(`${API_BASE_URL}/api/langfuse-monitor/watched-users`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ langfuse_user_id, label: label || langfuse_user_id }),
@@ -284,7 +284,7 @@ export const api = {
 
   async removeLangfuseWatchedUser(langfuse_user_id) {
     return fetchJson(
-      `${API_BASE_URL}/langfuse-monitor/watched-users/${encodeURIComponent(langfuse_user_id)}`,
+      `${API_BASE_URL}/api/langfuse-monitor/watched-users/${encodeURIComponent(langfuse_user_id)}`,
       { method: "DELETE" }
     );
   },
@@ -292,25 +292,25 @@ export const api = {
   async getLangfuseStats(hours = 24, langfuse_user_id = null) {
     const params = new URLSearchParams({ hours });
     if (langfuse_user_id) params.append("langfuse_user_id", langfuse_user_id);
-    return fetchJson(`${API_BASE_URL}/langfuse-monitor/stats?${params}`);
+    return fetchJson(`${API_BASE_URL}/api/langfuse-monitor/stats?${params}`);
   },
 
   async getLangfuseTraces(hours = 24, langfuse_user_id = null, limit = 50) {
     const params = new URLSearchParams({ hours, limit });
     if (langfuse_user_id) params.append("langfuse_user_id", langfuse_user_id);
-    return fetchJson(`${API_BASE_URL}/langfuse-monitor/traces?${params}`);
+    return fetchJson(`${API_BASE_URL}/api/langfuse-monitor/traces?${params}`);
   },
 
   async getLangfuseRCA(hours = 24, langfuse_user_id = null) {
     const params = new URLSearchParams({ hours });
     if (langfuse_user_id) params.append("langfuse_user_id", langfuse_user_id);
-    return fetchJson(`${API_BASE_URL}/langfuse-monitor/rca?${params}`);
+    return fetchJson(`${API_BASE_URL}/api/langfuse-monitor/rca?${params}`);
   },
 
   async runLangfuseRCA(hours = 1, langfuse_user_id = null) {
     const params = new URLSearchParams({ hours });
     if (langfuse_user_id) params.append("langfuse_user_id", langfuse_user_id);
-    return fetchJson(`${API_BASE_URL}/langfuse-monitor/rca/run?${params}`, {
+    return fetchJson(`${API_BASE_URL}/api/langfuse-monitor/rca/run?${params}`, {
       method: "POST",
     });
   },

@@ -22,6 +22,7 @@ def ask_llm(
     trace_name: str = "LLM Call",
     metadata: dict | None = None,
     session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[Tuple[str, int]]:
     """
     LLM call with optional Langfuse tracing.
@@ -42,13 +43,13 @@ def ask_llm(
 
     # Try Gemini first
     try:
-        return _call_gemini(prompt, trace_name, metadata, session_id)
+        return _call_gemini(prompt, trace_name, metadata, session_id, user_id)
     except Exception as e:
         logger.warning(f"[LLM] Gemini failed: {e}. Falling back to Gemma3...")
         
         # Fallback to Gemma3
         try:
-            return _call_gemma3(prompt, trace_name, metadata, session_id)
+            return _call_gemma3(prompt, trace_name, metadata, session_id, user_id)
         except Exception as fallback_error:
             logger.error(f"[LLM] Gemma3 fallback also failed: {fallback_error}")
             return None
@@ -59,6 +60,7 @@ def _call_gemini(
     trace_name: str = "LLM Call",
     metadata: dict | None = None,
     session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[Tuple[str, int]]:
     """
     Call Google Gemini API (Primary LLM)
@@ -109,53 +111,54 @@ def _call_gemini(
     # -------- traced path --------
     if langfuse and is_langfuse_enabled():
         try:
-            with langfuse.start_as_current_observation(
-                as_type="span",
+            # Langfuse SDK tracing
+            trace = langfuse.trace(
                 name=trace_name,
+                session_id=session_id,
+                user_id=user_id,
                 metadata={
                     **(metadata or {}),
                     "model": model_name,
                     "provider": "google",
                     "timeout_s": TIMEOUT_S,
-                    **({"session_id": session_id} if session_id else {}),
-                },
-            ) as root_span:
-                with langfuse_session(session_id):
-                    with langfuse.start_as_current_observation(
-                        as_type="generation",
-                        name="llm-generation",
-                        model=model_name,
-                        input=prompt,
-                    ) as generation:
-                        try:
-                            logger.info(
-                                f"[LLM] Calling Gemini..."
-                                + (f" (session: {session_id})" if session_id else "")
-                            )
-                            
-                            text, in_tok, out_tok, latency_ms = _call_gemini_api()
-                            
-                            logger.info(f"[LLM] Gemini response received ({latency_ms:.0f}ms)")
-                            
-                            total_tokens = in_tok + out_tok
-                            
-                            generation.update(
-                                output=text,
-                                usage={
-                                    "input": in_tok,
-                                    "output": out_tok,
-                                    "total": total_tokens,
-                                },
-                                metadata={"latency_ms": latency_ms, "error": False},
-                            )
-                            root_span.update(output={"response": True, "tokens": total_tokens})
-                            return text, total_tokens
-                        
-                        except Exception as e:
-                            logger.error(f"[LLM] Gemini Error: {e}", exc_info=True)
-                            generation.update(output=f"Error: {str(e)}", metadata={"error": True})
-                            root_span.update(output={"response": False, "error": str(e)})
-                            raise
+                }
+            )
+            
+            generation = trace.generation(
+                name="llm-generation",
+                model=model_name,
+                input=prompt,
+            )
+            
+            try:
+                logger.info(
+                    f"[LLM] Calling Gemini..."
+                    + (f" (session: {session_id})" if session_id else "")
+                )
+                
+                text, in_tok, out_tok, latency_ms = _call_gemini_api()
+                
+                logger.info(f"[LLM] Gemini response received ({latency_ms:.0f}ms)")
+                
+                total_tokens = in_tok + out_tok
+                
+                generation.end(
+                    output=text,
+                    usage={
+                        "input": in_tok,
+                        "output": out_tok,
+                        "total": total_tokens,
+                    },
+                    metadata={"latency_ms": latency_ms, "error": False},
+                )
+                trace.update(tags=["gemini"], metadata={"tokens": total_tokens})
+                return text, total_tokens
+            
+            except Exception as e:
+                logger.error(f"[LLM] Gemini Error: {e}", exc_info=True)
+                generation.end(output=f"Error: {str(e)}", metadata={"error": True})
+                trace.update(tags=["error", "gemini"], metadata={"error": str(e)})
+                raise
         
         except Exception as e:
             logger.warning(f"[Langfuse] Error in tracing: {e}", exc_info=True)
@@ -182,6 +185,7 @@ def _call_gemma3(
     trace_name: str = "LLM Call",
     metadata: dict | None = None,
     session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[Tuple[str, int]]:
     """
     Call Gemma3 via Ollama/LM Studio (Fallback LLM)
@@ -238,57 +242,57 @@ def _call_gemma3(
     # -------- traced path --------
     if langfuse and is_langfuse_enabled():
         try:
-            with langfuse.start_as_current_observation(
-                as_type="span",
+            trace = langfuse.trace(
                 name=trace_name,
+                session_id=session_id,
+                user_id=user_id,
                 metadata={
                     **(metadata or {}),
                     "model": model,
                     "provider": "gemma3_fallback",
                     "timeout_s": TIMEOUT_S,
-                    **({"session_id": session_id} if session_id else {}),
-                },
-            ) as root_span:
-                with langfuse_session(session_id):
-                    with langfuse.start_as_current_observation(
-                        as_type="generation",
-                        name="llm-generation",
-                        model=model,
-                        input=prompt,
-                    ) as generation:
-                        try:
-                            logger.info(
-                                f"[LLM] Calling Gemma3 (FALLBACK)..."
-                                + (f" (session: {session_id})" if session_id else "")
-                            )
-                            
-                            text, in_tok, out_tok, latency_ms = _call_gemma3_api()
-                            
-                            logger.info(f"[LLM] Gemma3 response received ({latency_ms:.0f}ms)")
-                            
-                            total_tokens = (
-                                (in_tok + out_tok)
-                                if (in_tok or out_tok)
-                                else _estimate_tokens(prompt, text)
-                            )
-                            
-                            generation.update(
-                                output=text,
-                                usage={
-                                    "input": in_tok,
-                                    "output": out_tok,
-                                    "total": total_tokens,
-                                },
-                                metadata={"latency_ms": latency_ms, "error": False},
-                            )
-                            root_span.update(output={"response": True, "tokens": total_tokens})
-                            return text, total_tokens
-                        
-                        except Exception as e:
-                            logger.error(f"[LLM] Gemma3 Error: {e}", exc_info=True)
-                            generation.update(output=f"Error: {str(e)}", metadata={"error": True})
-                            root_span.update(output={"response": False, "error": str(e)})
-                            raise
+                }
+            )
+            
+            generation = trace.generation(
+                name="llm-generation",
+                model=model,
+                input=prompt,
+            )
+            
+            try:
+                logger.info(
+                    f"[LLM] Calling Gemma3 (FALLBACK)..."
+                    + (f" (session: {session_id})" if session_id else "")
+                )
+                
+                text, in_tok, out_tok, latency_ms = _call_gemma3_api()
+                
+                logger.info(f"[LLM] Gemma3 response received ({latency_ms:.0f}ms)")
+                
+                total_tokens = (
+                    (in_tok + out_tok)
+                    if (in_tok or out_tok)
+                    else _estimate_tokens(prompt, text)
+                )
+                
+                generation.end(
+                    output=text,
+                    usage={
+                        "input": in_tok,
+                        "output": out_tok,
+                        "total": total_tokens,
+                    },
+                    metadata={"latency_ms": latency_ms, "error": False},
+                )
+                trace.update(tags=["gemma3"], metadata={"tokens": total_tokens})
+                return text, total_tokens
+            
+            except Exception as e:
+                logger.error(f"[LLM] Gemma3 Error: {e}", exc_info=True)
+                generation.end(output=f"Error: {str(e)}", metadata={"error": True})
+                trace.update(tags=["error", "gemma3"], metadata={"error": str(e)})
+                raise
         
         except Exception as e:
             logger.warning(f"[Langfuse] Error in tracing: {e}", exc_info=True)

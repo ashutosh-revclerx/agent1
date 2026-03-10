@@ -216,6 +216,7 @@ def get_rca(
     """
     Get RCA results for current user only
     Supports pagination: /rca?limit=10000&skip=0
+    Combines standard Prometheus RCAs with Langfuse RCAs.
     """
     db = get_db()
     if db is None:
@@ -223,13 +224,12 @@ def get_rca(
 
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
 
-    # ✅ Prefer timestamp_ist / timestamp_ist_str if you use it, fallback otherwise
-    sort_fields = [("timestamp_ist", -1), ("timestamp", -1), ("created_at_ist", -1), ("created_at", -1)]
-
-    docs = list(db.rca.find({"user_id": user.id}).sort(sort_fields).skip(skip).limit(limit))
-    for d in docs:
+    # 1. Fetch standard RCAs for the user
+    standard_docs = list(db.rca.find({"user_id": user.id}))
+    for d in standard_docs:
         _stringify_id(d)
         d["timestamp"] = _iso(d.get("timestamp_ist") or d.get("timestamp") or d.get("created_at_ist") or d.get("created_at"))
+        d["source"] = "prometheus"
         # Convert all ObjectId fields to strings
         if "batch_id" in d and d["batch_id"]:
             d["batch_id"] = str(d["batch_id"])
@@ -240,7 +240,40 @@ def get_rca(
         d["window_start"] = _iso(d.get("window_start_ist") or d.get("window_start"))
         d["window_end"] = _iso(d.get("window_end_ist") or d.get("window_end"))
 
-    return {"rca": docs}
+    # 2. Fetch Langfuse RCAs (global for now, or could filter by watched users)
+    langfuse_docs = []
+    if "langfuse_rca" in db.list_collection_names():
+        langfuse_docs = list(db.langfuse_rca.find({}))
+        for d in langfuse_docs:
+            _stringify_id(d)
+            d["timestamp"] = _iso(d.get("timestamp"))
+            d["source"] = "langfuse"
+            d["metric"] = "Langfuse LLM Traces"
+            
+            # Map Langfuse fields to standard RCA UI fields
+            inst = d.get("langfuse_user_id")
+            d["instance"] = f"User: {inst}" if inst else "All Users (Incremental)"
+            d["cause"] = d.get("root_cause", "No root cause identified.")
+            
+            # Extract actions from recommendations and join them for the "fix" field
+            recs = d.get("recommendations", [])
+            if isinstance(recs, list) and len(recs) > 0:
+                if isinstance(recs[0], dict):
+                    d["fix"] = [r.get("action", "") for r in recs]
+                else:
+                    d["fix"] = recs
+            else:
+                d["fix"] = "No specific recommendations."
+
+    # 3. Combine, sort, and paginate
+    all_docs = standard_docs + langfuse_docs
+    # Sort descending by timestamp
+    all_docs.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
+    
+    # Apply skip and limit
+    paginated_docs = all_docs[skip : skip + limit]
+
+    return {"rca": paginated_docs}
 
 
 @router.get("/prom-metrics")

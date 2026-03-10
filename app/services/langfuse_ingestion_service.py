@@ -156,6 +156,54 @@ def _get_rolling_baseline(db, hours: int = 1) -> dict:
     }
 
 
+def _build_rca_prompt(traces: list, hours: int) -> str:
+    """Build a prompt for the full-window manual RCA analysis."""
+    trace_lines = []
+    for t in traces:
+        trace_lines.append(
+            f"  - name={t.get('name', 'unknown')} | user={t.get('langfuse_user_id')} | "
+            f"model={t.get('model')} | tokens={t.get('total_tokens', 0)} | "
+            f"cost=${t.get('cost_usd', 0)} | latency={t.get('latency_s', '?')}s | "
+            f"status={t.get('status')} | time={t.get('timestamp')}"
+        )
+
+    schema = {
+        "summary": "string - brief overview of the trace data",
+        "anomalies": [
+            {
+                "type": "error_spike|latency_spike|cost_anomaly|throughput_drop",
+                "severity": "low|medium|high|critical",
+                "description": "string",
+                "affected_model": "string",
+                "affected_trace": "string",
+                "evidence": "string",
+            }
+        ],
+        "root_cause": "string - collective root cause analysis for the period",
+        "recommendations": [
+            {"priority": "immediate|short_term|long_term", "action": "string"}
+        ],
+        "health_score": "0-100 integer (100 = perfectly healthy)",
+    }
+
+    return f"""You are an expert LLM operations analyst reviewing Langfuse traces.
+You are running a full analysis on {len(traces)} traces from the last {hours} hours.
+
+TRACES TO EVALUATE:
+{chr(10).join(trace_lines)}
+
+INSTRUCTIONS:
+1. Review the performance, costs, and errors across all these traces.
+2. Group related errors or slow responses.
+3. Identify collective root causes if multiple traces are failing for the same reason.
+4. Return ONLY valid JSON (no markdown, no code fences) matching the schema.
+
+SCHEMA:
+{json.dumps(schema, indent=2)}
+
+RETURN ONLY JSON:"""
+
+
 def _build_incremental_rca_prompt(new_traces: list, baseline: dict) -> str:
     """Build a prompt that focuses on NEW traces only, with rolling baseline context."""
     trace_lines = []
