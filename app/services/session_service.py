@@ -14,7 +14,7 @@ class SessionManager:
     def __init__(self):
         self.active_sessions = {}  # In-memory cache
 
-    def create_session(self, db) -> str:
+    def create_session(self, db, user_id: str = None) -> str:
         """Create a new chat session"""
         session_id = str(uuid.uuid4())
         session_data = {
@@ -24,6 +24,8 @@ class SessionManager:
             "message_count": 0,
             "total_tokens": 0,
         }
+        if user_id:
+            session_data["user_id"] = user_id
         if db is not None:
             try:
                 db.chat_sessions.insert_one(session_data)

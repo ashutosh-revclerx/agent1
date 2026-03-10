@@ -51,7 +51,7 @@ def ask_llm(
             return _call_gemma3(prompt, trace_name, metadata, session_id)
         except Exception as fallback_error:
             logger.error(f"[LLM] Gemma3 fallback also failed: {fallback_error}")
-            return None, 0
+            return None
 
 
 def _call_gemini(

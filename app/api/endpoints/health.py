@@ -2,8 +2,8 @@
 Health and Status Routes
 """
 from fastapi import APIRouter
-from app.core.config import PROM_URL, LLM_MODEL, SLACK_WEBHOOK_URL
-from app.services.langfuse_service import is_langfuse_enabled, get_langfuse_client, LANGFUSE_HOST
+from app.core.config import PROM_URL, LLM_MODEL, SLACK_WEBHOOK_URL, LANGFUSE_HOST
+from app.services.langfuse_service import is_langfuse_enabled, get_langfuse_client
 from app.services.slack_service import slack_is_configured
 
 router = APIRouter()

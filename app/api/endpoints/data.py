@@ -244,13 +244,17 @@ def get_rca(
 
 
 @router.get("/prom-metrics")
-def get_prom_metrics(limit: int = Query(10000, ge=1), skip: int = Query(0, ge=0)):
+def get_prom_metrics(
+    user: User = Depends(get_current_user),
+    limit: int = Query(10000, ge=1),
+    skip: int = Query(0, ge=0),
+):
     db = get_db()
     if db is None:
         return {"metrics": []}
 
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
-    docs = list(db.metrics.find().sort([("timestamp", -1)]).skip(skip).limit(limit))
+    docs = list(db.metrics.find({"user_id": user.id}).sort([("timestamp", -1)]).skip(skip).limit(limit))
     for d in docs:
         _stringify_id(d)
         d["timestamp"] = _iso(d.get("timestamp"))
@@ -259,13 +263,17 @@ def get_prom_metrics(limit: int = Query(10000, ge=1), skip: int = Query(0, ge=0)
 
 
 @router.get("/api/sessions")
-def get_sessions(limit: int = Query(10000, ge=1), skip: int = Query(0, ge=0)):
+def get_sessions(
+    user: User = Depends(get_current_user),
+    limit: int = Query(10000, ge=1),
+    skip: int = Query(0, ge=0),
+):
     db = get_db()
     if db is None:
         return {"sessions": []}
 
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
-    sessions = list(db.chat_sessions.find().sort("last_activity", -1).skip(skip).limit(limit))
+    sessions = list(db.chat_sessions.find({"user_id": user.id}).sort("last_activity", -1).skip(skip).limit(limit))
     for s in sessions:
         _stringify_id(s)
         s["created_at"] = _iso(s.get("created_at"))
@@ -275,7 +283,7 @@ def get_sessions(limit: int = Query(10000, ge=1), skip: int = Query(0, ge=0)):
 
 
 @router.get("/api/sessions/{session_id}")
-def get_session_details(session_id: str):
+def get_session_details(session_id: str, user: User = Depends(get_current_user)):
     db = get_db()
     if db is None:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -292,7 +300,7 @@ def get_session_details(session_id: str):
 
 
 @router.delete("/api/sessions/{session_id}")
-def delete_session(session_id: str):
+def delete_session(session_id: str, user: User = Depends(get_current_user)):
     db = get_db()
     if db is None:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -311,14 +319,19 @@ def delete_session(session_id: str):
 # ============ IP-FILTERED ENDPOINTS ============
 
 @router.get("/metrics/by-ip")
-def get_metrics_by_ip(ip: str, limit: int = Query(10000, ge=1), skip: int = Query(0, ge=0)):
-    """Get metrics filtered by IP address"""
+def get_metrics_by_ip(
+    ip: str,
+    user: User = Depends(get_current_user),
+    limit: int = Query(10000, ge=1),
+    skip: int = Query(0, ge=0),
+):
+    """Get metrics filtered by IP address for current user"""
     db = get_db()
     if db is None:
         return {"metrics": []}
     
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
-    docs = list(db.metrics_batches.find({"ip": ip}).sort([("collected_at_ist", -1)]).skip(skip).limit(limit))
+    docs = list(db.metrics_batches.find({"ip": ip, "user_id": user.id}).sort([("collected_at_ist", -1)]).skip(skip).limit(limit))
     
     for d in docs:
         _stringify_id(d)
@@ -330,14 +343,19 @@ def get_metrics_by_ip(ip: str, limit: int = Query(10000, ge=1), skip: int = Quer
 
 
 @router.get("/anomalies/by-ip")
-def get_anomalies_by_ip(ip: str, limit: int = Query(10000, ge=1), skip: int = Query(0, ge=0)):
-    """Get anomalies filtered by IP address"""
+def get_anomalies_by_ip(
+    ip: str,
+    user: User = Depends(get_current_user),
+    limit: int = Query(10000, ge=1),
+    skip: int = Query(0, ge=0),
+):
+    """Get anomalies filtered by IP address for current user"""
     db = get_db()
     if db is None:
         return {"anomalies": []}
     
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
-    docs = list(db.anomalies.find({"ip": ip}).sort([("created_at_ist", -1)]).skip(skip).limit(limit))
+    docs = list(db.anomalies.find({"ip": ip, "user_id": user.id}).sort([("created_at_ist", -1)]).skip(skip).limit(limit))
     
     for d in docs:
         _stringify_id(d)
@@ -353,14 +371,19 @@ def get_anomalies_by_ip(ip: str, limit: int = Query(10000, ge=1), skip: int = Qu
 
 
 @router.get("/incidents/by-ip")
-def get_incidents_by_ip(ip: str, limit: int = Query(10000, ge=1), skip: int = Query(0, ge=0)):
-    """Get incidents filtered by IP address"""
+def get_incidents_by_ip(
+    ip: str,
+    user: User = Depends(get_current_user),
+    limit: int = Query(10000, ge=1),
+    skip: int = Query(0, ge=0),
+):
+    """Get incidents filtered by IP address for current user"""
     db = get_db()
     if db is None:
         return {"incidents": []}
     
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
-    docs = list(db.incidents.find({"ip": ip}).sort([("created_at_ist", -1)]).skip(skip).limit(limit))
+    docs = list(db.incidents.find({"ip": ip, "user_id": user.id}).sort([("created_at_ist", -1)]).skip(skip).limit(limit))
     
     for d in docs:
         _stringify_id(d)
@@ -374,14 +397,19 @@ def get_incidents_by_ip(ip: str, limit: int = Query(10000, ge=1), skip: int = Qu
 
 
 @router.get("/rca/by-ip")
-def get_rca_by_ip(ip: str, limit: int = Query(10000, ge=1), skip: int = Query(0, ge=0)):
-    """Get RCA results filtered by IP address"""
+def get_rca_by_ip(
+    ip: str,
+    user: User = Depends(get_current_user),
+    limit: int = Query(10000, ge=1),
+    skip: int = Query(0, ge=0),
+):
+    """Get RCA results filtered by IP address for current user"""
     db = get_db()
     if db is None:
         return {"rca": []}
     
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
-    docs = list(db.rca.find({"ip": ip}).sort([("timestamp_ist", -1)]).skip(skip).limit(limit))
+    docs = list(db.rca.find({"ip": ip, "user_id": user.id}).sort([("timestamp_ist", -1)]).skip(skip).limit(limit))
     
     for d in docs:
         _stringify_id(d)
@@ -400,14 +428,19 @@ def get_rca_by_ip(ip: str, limit: int = Query(10000, ge=1), skip: int = Query(0,
 
 
 @router.get("/batches/by-ip")
-def get_batches_by_ip(ip: str, limit: int = Query(10000, ge=1), skip: int = Query(0, ge=0)):
-    """Get batch results filtered by IP address"""
+def get_batches_by_ip(
+    ip: str,
+    user: User = Depends(get_current_user),
+    limit: int = Query(10000, ge=1),
+    skip: int = Query(0, ge=0),
+):
+    """Get batch results filtered by IP address for current user"""
     db = get_db()
     if db is None:
         return {"batches": []}
     
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
-    docs = list(db.metrics_batches.find({"ip": ip}).sort([("collected_at_ist", -1)]).skip(skip).limit(limit))
+    docs = list(db.metrics_batches.find({"ip": ip, "user_id": user.id}).sort([("collected_at_ist", -1)]).skip(skip).limit(limit))
     
     for d in docs:
         _stringify_id(d)

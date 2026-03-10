@@ -85,7 +85,7 @@ def add_target(target: Target, user: User = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Target already exists")
     
     # Add user_id to target document
-    target_doc = target.dict()
+    target_doc = target.model_dump()
     target_doc["user_id"] = user.id
     
     db.targets.insert_one(target_doc)

@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.core.config import PROM_URL, BATCH_INTERVAL_MINUTES, MONGO_URI
@@ -51,13 +50,14 @@ class BatchMonitor:
 
     def get_window(self) -> Tuple[datetime, datetime]:
         """Calculate current batch window in IST."""
+        from datetime import timezone
         current_ist = now_ist()
         current_utc = ist_to_utc(current_ist)
         start_utc, end_utc = make_batch_window(current_utc.replace(tzinfo=None), self.interval)
 
-        # Convert back to IST aware
-        start_ist = start_utc.replace(tzinfo=datetime.utcnow().astimezone().tzinfo).astimezone(current_ist.tzinfo)
-        end_ist = end_utc.replace(tzinfo=datetime.utcnow().astimezone().tzinfo).astimezone(current_ist.tzinfo)
+        # Convert back to IST-aware datetimes properly
+        start_ist = start_utc.replace(tzinfo=timezone.utc).astimezone(current_ist.tzinfo)
+        end_ist = end_utc.replace(tzinfo=timezone.utc).astimezone(current_ist.tzinfo)
         return start_ist, end_ist
 
     def get_session_id(self, window_start: datetime) -> str:
@@ -169,7 +169,7 @@ RETURN ONLY JSON:"""
 
     async def call_llm(self, prompt: str, session_id: str, metadata: Dict) -> Dict:
         # ✅ LLM model/provider is read by ask_llm() from env
-        result = await asyncio.get_event_loop().run_in_executor(
+        result = await asyncio.get_running_loop().run_in_executor(
             None, ask_llm, prompt, "Batch Collective RCA", metadata, session_id
         )
         if not result:
@@ -494,10 +494,20 @@ RETURN ONLY JSON:"""
         while True:
             try:
                 now = now_ist()
-                bucket = (now.minute // self.interval) * self.interval
-                next_run = now.replace(minute=bucket, second=0, microsecond=0)
-                if now >= next_run:
-                    next_run += timedelta(minutes=self.interval)
+                # Guard against intervals >= 60 minutes
+                if self.interval >= 60:
+                    # For hour+ intervals, align to the start of the hour
+                    total_minutes = now.hour * 60 + now.minute
+                    bucket_minutes = (total_minutes // self.interval) * self.interval
+                    next_bucket = bucket_minutes + self.interval
+                    next_run = now.replace(hour=next_bucket // 60, minute=next_bucket % 60, second=0, microsecond=0)
+                    if next_run <= now:
+                        next_run += timedelta(minutes=self.interval)
+                else:
+                    bucket = (now.minute // self.interval) * self.interval
+                    next_run = now.replace(minute=bucket, second=0, microsecond=0)
+                    if now >= next_run:
+                        next_run += timedelta(minutes=self.interval)
 
                 sleep_sec = (next_run - now).total_seconds()
                 if sleep_sec > 0:
@@ -653,7 +663,7 @@ async def lifespan(app: FastAPI):
             
             db.targets.create_index([("user_id", 1), ("endpoint", 1)])
             
-            db.alert_windows.create_index([("window_start_ist_str", 1), ("window_end_ist_str", 1)], unique=True)
+            db.alert_windows.create_index([("user_id", 1), ("window_start_ist_str", 1), ("window_end_ist_str", 1)], unique=True)
             db.alert_windows.create_index([("user_id", 1), ("window_start_ist_str", 1)])
 
             logger.info("[Database] Indexes created")
