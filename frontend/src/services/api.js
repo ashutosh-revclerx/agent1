@@ -301,6 +301,20 @@ export const api = {
     return fetchJson(`${API_BASE_URL}/langfuse-monitor/traces?${params}`);
   },
 
+  async getLangfuseRCA(hours = 24, langfuse_user_id = null) {
+    const params = new URLSearchParams({ hours });
+    if (langfuse_user_id) params.append("langfuse_user_id", langfuse_user_id);
+    return fetchJson(`${API_BASE_URL}/langfuse-monitor/rca?${params}`);
+  },
+
+  async runLangfuseRCA(hours = 1, langfuse_user_id = null) {
+    const params = new URLSearchParams({ hours });
+    if (langfuse_user_id) params.append("langfuse_user_id", langfuse_user_id);
+    return fetchJson(`${API_BASE_URL}/langfuse-monitor/rca/run?${params}`, {
+      method: "POST",
+    });
+  },
+
 
 
   async getBatches() {

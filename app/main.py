@@ -672,6 +672,7 @@ async def lifespan(app: FastAPI):
             db.langfuse_traces.create_index([("langfuse_user_id", 1), ("timestamp", -1)])
             db.langfuse_traces.create_index("timestamp")
             db.langfuse_watched_users.create_index("langfuse_user_id", unique=True)
+            db.langfuse_rca.create_index("timestamp")
 
             logger.info("[Database] Indexes created")
         except Exception as e:

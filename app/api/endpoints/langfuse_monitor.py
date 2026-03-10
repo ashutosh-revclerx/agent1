@@ -83,7 +83,7 @@ def get_stats(
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
-    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     query = {"timestamp": {"$gte": since}}
     if langfuse_user_id:
         query["langfuse_user_id"] = langfuse_user_id
@@ -131,7 +131,7 @@ def get_traces(
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
-    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     query = {"timestamp": {"$gte": since}}
     if langfuse_user_id:
         query["langfuse_user_id"] = langfuse_user_id
@@ -142,3 +142,50 @@ def get_traces(
         .limit(limit)
     )
     return {"traces": traces, "count": len(traces)}
+
+
+# ── RCA ────────────────────────────────────────────────────────────────────────
+
+@router.get("/rca")
+def get_rca_results(
+    hours: int = Query(default=24, ge=1, le=168),
+    langfuse_user_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user=Depends(get_current_user),
+):
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    query = {"timestamp": {"$gte": since}}
+    if langfuse_user_id:
+        query["langfuse_user_id"] = langfuse_user_id
+
+    results = list(
+        db.langfuse_rca.find(query, {"_id": 0, "raw_analysis": 0})
+        .sort("timestamp", -1)
+        .limit(limit)
+    )
+    return {"rca": results, "count": len(results)}
+
+
+@router.post("/rca/run")
+async def run_rca_now(
+    hours: int = Query(default=1, ge=1, le=24),
+    langfuse_user_id: Optional[str] = Query(default=None),
+    current_user=Depends(get_current_user),
+):
+    """Trigger an on-demand RCA analysis."""
+    import asyncio
+    from app.services.langfuse_ingestion_service import run_rca_sync
+
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, run_rca_sync, hours, langfuse_user_id)
+
+    if not result:
+        return {"message": "No traces found to analyze or LLM analysis failed", "rca": None}
+
+    # Remove raw_analysis from response
+    result.pop("raw_analysis", None)
+    return {"message": "RCA analysis complete", "rca": result}
