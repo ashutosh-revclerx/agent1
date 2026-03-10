@@ -32,6 +32,7 @@ from app.services.llm_service import ask_llm
 from app.services.session_service import session_manager
 
 from app.api.router import api_router
+from app.services.langfuse_ingestion_service import poll_langfuse
 
 try:
     from langfuse import propagate_attributes
