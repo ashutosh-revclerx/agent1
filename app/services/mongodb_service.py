@@ -34,9 +34,9 @@ def get_db():
             logger.info("[MongoDB] Connecting...")
             _mongo_client = MongoClient(
                 uri,
-                serverSelectionTimeoutMS=2000,
-                connectTimeoutMS=2000,
-                socketTimeoutMS=5000,
+                serverSelectionTimeoutMS=10000,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=10000,
                 maxPoolSize=10,
                 minPoolSize=1,
                 retryWrites=True,

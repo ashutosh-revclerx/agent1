@@ -21,12 +21,17 @@ from app.core.logging import logger
 
 # Try to import Langfuse (optional dependency)
 try:
-    from langfuse import Langfuse, get_client, propagate_attributes
+    from langfuse import Langfuse
     LANGFUSE_AVAILABLE = True
 except ImportError:
     LANGFUSE_AVAILABLE = False
+    logger.info("[Langfuse]  Not installed")
+
+# propagate_attributes may not exist in all Langfuse versions
+try:
+    from langfuse import propagate_attributes
+except ImportError:
     propagate_attributes = None  # type: ignore
-    logger.info("[Langfuse] ⚠️ Not installed")
 
 
 # Global state
@@ -39,20 +44,19 @@ def initialize_langfuse():
     global langfuse, LANGFUSE_ENABLED
 
     if not LANGFUSE_AVAILABLE:
-        logger.info("[Langfuse] ⚠️ Not installed")
+        logger.info("[Langfuse]  Not installed")
         return
 
     if not (LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY):
-        logger.info("[Langfuse] ⚠️ Disabled (API keys not set in .env)")
+        logger.info("[Langfuse]  Disabled (API keys not set in .env)")
         return
 
     try:
-        Langfuse(
+        langfuse = Langfuse(
             public_key=LANGFUSE_PUBLIC_KEY,
             secret_key=LANGFUSE_SECRET_KEY,
             host=LANGFUSE_HOST,
         )
-        langfuse = get_client()
         langfuse.auth_check()
         LANGFUSE_ENABLED = True
         logger.info("[Langfuse] ✅ Connected successfully!")
