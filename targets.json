@@ -1,12 +1,12 @@
 [
   {
     "targets": [
-      "192.168.0.14:9182"
+      "host.docker.internal:8001"
     ],
     "labels": {
       "job": "dynamic-targets",
-      "name": "server",
-      "user_id": "697db48e10965d8fb0ff3bb7"
+      "name": "new",
+      "user_id": "69b06525f160860c7ea6d729"
     }
   }
 ]

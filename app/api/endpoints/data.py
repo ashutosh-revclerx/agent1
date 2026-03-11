@@ -240,10 +240,15 @@ def get_rca(
         d["window_start"] = _iso(d.get("window_start_ist") or d.get("window_start"))
         d["window_end"] = _iso(d.get("window_end_ist") or d.get("window_end"))
 
-    # 2. Fetch Langfuse RCAs (global for now, or could filter by watched users)
+    # 2. Fetch Langfuse RCAs (filtered by watched users)
     langfuse_docs = []
     if "langfuse_rca" in db.list_collection_names():
-        langfuse_docs = list(db.langfuse_rca.find({}))
+        watching_docs = list(db.langfuse_watched_users.find({"added_by": user.id}))
+        watched_ids = [doc["langfuse_user_id"] for doc in watching_docs]
+        
+        if watched_ids:
+            langfuse_docs = list(db.langfuse_rca.find({"langfuse_user_id": {"$in": watched_ids}}))
+        
         for d in langfuse_docs:
             _stringify_id(d)
             d["timestamp"] = _iso(d.get("timestamp"))
