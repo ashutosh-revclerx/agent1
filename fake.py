@@ -22,7 +22,7 @@ LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
 LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY", "")
 LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com").rstrip("/")
 
-USER_ID = "anon"
+USER_ID = "anon 2"
 
 MODELS = ["gemini-2.0-flash", "gpt-4-turbo", "claude-3-opus", "gemma3:1b"]
 
@@ -143,7 +143,7 @@ if __name__ == "__main__":
 
     while True:
         try:
-            time.sleep(120)  # Every 2 minutes
+            time.sleep(30)  # Every 2 minutes
             generate_trace()
         except KeyboardInterrupt:
             print("\nStopping script...")

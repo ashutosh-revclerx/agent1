@@ -30,8 +30,10 @@ except ImportError:
 # propagate_attributes may not exist in all Langfuse versions
 try:
     from langfuse import propagate_attributes
+    _PROPAGATE_AVAILABLE = True
 except ImportError:
     propagate_attributes = None  # type: ignore
+    _PROPAGATE_AVAILABLE = False
 
 
 # Global state
@@ -168,31 +170,41 @@ def make_batch_session_id(
 def langfuse_session(session_id: Optional[str]) -> Iterator[None]:
     """
     Context manager to propagate session_id to nested Langfuse observations.
-    
+
     This ensures all LLM calls within this context are grouped under
     the same session in the Langfuse dashboard.
-    
+
+    Note: session_id is also passed directly to langfuse.trace() in llm_service.py,
+    so session grouping works correctly even when propagate_attributes is unavailable.
+    This context manager provides additional SDK-level propagation when supported.
+
     Args:
         session_id: The session ID to propagate
-    
+
     Usage:
         session_id = "batch:202601290316-202601290317"
         with langfuse_session(session_id):
             ask_llm("prompt 1")  # Uses session_id
             ask_llm("prompt 2")  # Uses same session_id
-            
+
         # In Langfuse dashboard, both calls appear under one session
     """
-    if not (session_id and LANGFUSE_ENABLED and propagate_attributes):
+    # Fast-path: no-op if Langfuse is disabled, no session, or propagate_attributes
+    # is not available in this SDK version. Session grouping still works because
+    # session_id is passed explicitly to langfuse.trace() in llm_service.py.
+    if not (session_id and LANGFUSE_ENABLED and _PROPAGATE_AVAILABLE):
         yield
         return
 
-    ctx = propagate_attributes(session_id=session_id)
     try:
+        ctx = propagate_attributes(session_id=session_id)
         ctx.__enter__()
-        yield
-    finally:
         try:
+            yield
+        finally:
             ctx.__exit__(None, None, None)
-        except Exception:
-            pass
+    except Exception as e:
+        # propagate_attributes failed at runtime (e.g. SDK version mismatch).
+        # Log once and fall through — session_id on trace() still groups correctly.
+        logger.warning(f"[Langfuse] Span error: {e}")
+        yield

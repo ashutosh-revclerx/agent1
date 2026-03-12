@@ -294,16 +294,23 @@ def _get_rolling_baseline(db, hours: int = 1) -> dict:
     }
 
 
-def _build_rca_prompt(traces: list, hours: int) -> str:
-    """Build a prompt for the full-window manual RCA analysis."""
-    trace_lines = []
-    for t in traces:
-        trace_lines.append(
-            f"  - name={t.get('name', 'unknown')} | user={t.get('langfuse_user_id')} | "
-            f"model={t.get('model')} | tokens={t.get('total_tokens', 0)} | "
-            f"cost=${t.get('cost_usd', 0)} | latency={t.get('latency_s', '?')}s | "
-            f"status={t.get('status')} | time={t.get('timestamp')}"
-        )
+def _format_trace_lines(traces: list) -> str:
+    """Format a list of trace dicts into readable lines for LLM prompts."""
+    lines = [
+        f"  - name={t.get('name', 'unknown')} | user={t.get('langfuse_user_id')} | "
+        f"model={t.get('model')} | tokens={t.get('total_tokens', 0)} | "
+        f"cost=${t.get('cost_usd', 0)} | latency={t.get('latency_s', '?')}s | "
+        f"status={t.get('status')} | time={t.get('timestamp')}"
+        for t in traces
+    ]
+    return chr(10).join(lines)
+
+
+def _build_rca_prompt(traces: list, hours: int, label: str = None) -> str:
+    """Build a prompt for full-window RCA analysis.
+    label: optional context string shown in the prompt header (e.g. 'session abc-123')
+    """
+    context = label or f"the last {hours} hours" if hours else "this session"
 
     schema = {
         "summary": "string - brief overview of the trace data",
@@ -325,10 +332,10 @@ def _build_rca_prompt(traces: list, hours: int) -> str:
     }
 
     return f"""You are an expert LLM operations analyst reviewing Langfuse traces.
-You are running a full analysis on {len(traces)} traces from the last {hours} hours.
+You are running a full analysis on {len(traces)} traces from {context}.
 
 TRACES TO EVALUATE:
-{chr(10).join(trace_lines)}
+{_format_trace_lines(traces)}
 
 INSTRUCTIONS:
 1. Review the performance, costs, and errors across all these traces.
@@ -344,15 +351,6 @@ RETURN ONLY JSON:"""
 
 def _build_incremental_rca_prompt(new_traces: list, baseline: dict) -> str:
     """Build a prompt that focuses on NEW traces only, with rolling baseline context."""
-    trace_lines = []
-    for t in new_traces:
-        trace_lines.append(
-            f"  - name={t.get('name', 'unknown')} | user={t.get('langfuse_user_id')} | "
-            f"model={t.get('model')} | tokens={t.get('total_tokens', 0)} | "
-            f"cost=${t.get('cost_usd', 0)} | latency={t.get('latency_s', '?')}s | "
-            f"status={t.get('status')} | time={t.get('timestamp')}"
-        )
-
     new_errors = sum(1 for t in new_traces if t.get("status") == "error")
     new_latencies = [t["latency_s"] for t in new_traces if t.get("latency_s")]
     new_avg_lat = round(sum(new_latencies) / len(new_latencies), 2) if new_latencies else 0
@@ -388,7 +386,7 @@ ROLLING BASELINE (last 1 hour):
   Total cost: ${baseline.get('total_cost', 0)}
 
 NEW TRACES TO EVALUATE ({len(new_traces)} traces):
-{chr(10).join(trace_lines)}
+{_format_trace_lines(new_traces)}
 
 New trace stats: {new_errors} errors, avg_latency={new_avg_lat}s
 
@@ -442,6 +440,11 @@ def run_rca_on_new_traces(new_trace_ids: list) -> dict:
     if not analysis:
         return {}
 
+    # FIX BUG 1: Extract fields from analysis BEFORE using them
+    noteworthy = analysis.get("noteworthy", False)
+    health = analysis.get("health_score", 100)
+    anomalies = analysis.get("anomalies", [])
+
     # Count real errors from the ingested traces (source of truth — not the LLM)
     actual_errors = sum(1 for t in new_traces if t.get("status") == "error")
 
@@ -468,13 +471,19 @@ def run_rca_on_new_traces(new_trace_ids: list) -> dict:
         analysis["noteworthy"] = True
         analysis["health_score"] = health
 
-    # Store RCA result
+    # Extract real user IDs from traces — used for storage and alerts
+    involved_user_ids = list({t.get("langfuse_user_id") for t in new_traces if t.get("langfuse_user_id")})
+    primary_user_id = involved_user_ids[0] if len(involved_user_ids) == 1 else None
+
+    # Store batch RCA result
     rca_doc = {
         "timestamp": _utc_iso(),
-        "window_hours": 0,  # incremental, not a fixed window
-        "langfuse_user_id": None,
+        "window_hours": 0,
+        "rca_type": "batch",                       # distinguishes from session/manual RCA
+        "langfuse_user_id": primary_user_id,       # single user or None if multi-user batch
+        "langfuse_user_ids": involved_user_ids,    # always populated for $or queries
         "total_traces": len(new_traces),
-        "total_errors": sum(1 for t in new_traces if t.get("status") == "error"),
+        "total_errors": actual_errors,             # reuse already-computed value
         "total_cost_usd": round(sum(t.get("cost_usd", 0) for t in new_traces), 6),
         "summary": analysis.get("summary", ""),
         "root_cause": analysis.get("root_cause", ""),
@@ -493,12 +502,144 @@ def run_rca_on_new_traces(new_trace_ids: list) -> dict:
     except Exception as e:
         logger.error(f"[Langfuse RCA] Failed to store RCA: {e}")
 
-    # Send email + Slack alerts for noteworthy anomalies
-    langfuse_user_ids = list({t.get("langfuse_user_id") for t in new_traces if t.get("langfuse_user_id")})
-    _send_langfuse_alerts(rca_doc, langfuse_user_ids=langfuse_user_ids)
+    # Send email + Slack alerts — reuse involved_user_ids already computed above
+    _send_langfuse_alerts(rca_doc, langfuse_user_ids=involved_user_ids)
+
+    # Auto-store sessions that have error traces only
+    # Group error traces by session_id and store each errored session
+    error_traces = [t for t in new_traces if t.get("status") == "error"]
+    if error_traces:
+        _store_errored_sessions(db, error_traces, rca_doc)
 
     rca_doc.pop("_id", None)
     return rca_doc
+
+
+def _store_errored_sessions(db, error_traces: list, rca_doc: dict):
+    """
+    Auto-store sessions that contain error traces.
+    Called automatically after RCA when errors are detected.
+    Groups error traces by session_id and upserts one document
+    per session into langfuse_stored_sessions.
+    Traces with no session_id are stored using trace_id as the key.
+    """
+    # Group error traces by session_id (or trace_id if no session)
+    session_map = {}
+    for t in error_traces:
+        key = t.get("session_id") or t.get("trace_id")
+        if key not in session_map:
+            session_map[key] = []
+        session_map[key].append(t)
+
+    for session_key, errored in session_map.items():
+        user_ids = list({t.get("langfuse_user_id") for t in errored if t.get("langfuse_user_id")})
+        is_sessionless = not errored[0].get("session_id")
+
+        # Fetch all traces for this session (not just errored ones) for full context
+        if not is_sessionless:
+            all_session_traces = list(db.langfuse_traces.find(
+                {"session_id": session_key}, {"_id": 0}
+            ))
+        else:
+            # No session — use just the errored trace
+            all_session_traces = errored
+
+        latencies = [t["latency_s"] for t in all_session_traces if t.get("latency_s")]
+        metrics = {
+            "total_traces": len(all_session_traces),
+            "total_tokens": sum(t.get("total_tokens", 0) for t in all_session_traces),
+            "total_cost_usd": round(sum(t.get("cost_usd", 0) for t in all_session_traces), 6),
+            "avg_latency_s": round(sum(latencies) / len(latencies), 3) if latencies else 0.0,
+            "error_count": sum(1 for t in all_session_traces if t.get("status") == "error"),
+            "models_used": list({t.get("model") for t in all_session_traces if t.get("model")}),
+        }
+
+        # Run a dedicated RCA on the FULL session context
+        # This is more accurate than the batch RCA that ran on all new traces
+        session_rca = {}
+        try:
+            session_prompt = _build_rca_prompt(
+                all_session_traces,
+                hours=0,
+                label=f"session {session_key}"
+            )
+            session_id_str = f"session-rca-{uuid.uuid4().hex[:8]}"
+            result = ask_llm(session_prompt, "Session RCA", {
+                "session_id": session_key,
+                "trace_count": len(all_session_traces),
+                "error_count": metrics["error_count"],
+            }, session_id=session_id_str)
+
+            if result:
+                text, _ = result
+                session_rca = parse_json(text) if text else {}
+                logger.info(
+                    f"[Langfuse RCA] Session RCA complete: "
+                    f"session={session_key} health={session_rca.get('health_score', '?')}"
+                )
+            else:
+                logger.warning(f"[Langfuse RCA] Session RCA returned no result for {session_key}")
+        except Exception as e:
+            logger.error(f"[Langfuse RCA] Session RCA failed for {session_key}: {e}")
+
+        # Store the session-level RCA separately in langfuse_rca
+        if session_rca:
+            session_rca_doc = {
+                "timestamp": _utc_iso(),
+                "window_hours": 0,
+                "session_id": session_key,
+                "langfuse_user_id": user_ids[0] if len(user_ids) == 1 else None,
+                "langfuse_user_ids": user_ids,
+                "total_traces": len(all_session_traces),
+                "total_errors": metrics["error_count"],
+                "total_cost_usd": metrics["total_cost_usd"],
+                "summary": session_rca.get("summary", ""),
+                "root_cause": session_rca.get("root_cause", ""),
+                "anomalies": session_rca.get("anomalies", []),
+                "recommendations": session_rca.get("recommendations", []),
+                "health_score": session_rca.get("health_score", 100),
+                "raw_analysis": session_rca,
+                "rca_type": "session",   # distinguishes from batch RCA
+            }
+            try:
+                db.langfuse_rca.insert_one(session_rca_doc)
+                session_rca_doc.pop("_id", None)
+                session_rca_doc.pop("raw_analysis", None)
+            except Exception as e:
+                logger.error(f"[Langfuse RCA] Failed to store session RCA for {session_key}: {e}")
+
+        # Safely resolve which RCA to attach — session-level if available, batch as fallback
+        # session_rca_doc is only defined inside the `if session_rca:` block above,
+        # so we use locals().get() to avoid NameError when session RCA failed
+        resolved_rca = locals().get("session_rca_doc") or {
+            k: v for k, v in rca_doc.items()
+            if k not in ("_id", "raw_analysis")
+        }
+
+        doc = {
+            "session_id": session_key,
+            "is_sessionless": is_sessionless,
+            "stored_at": _utc_iso(),
+            "auto_stored": True,
+            "langfuse_user_ids": user_ids,
+            "metrics": metrics,
+            "traces": all_session_traces,
+            "latest_rca": resolved_rca,
+        }
+
+        try:
+            db.langfuse_stored_sessions.replace_one(
+                {"session_id": session_key},
+                doc,
+                upsert=True,
+            )
+            logger.info(
+                f"[Langfuse RCA] Auto-stored errored session: "
+                f"session={session_key} errors={metrics['error_count']} "
+                f"sessionless={is_sessionless}"
+            )
+        except Exception as e:
+            logger.error(f"[Langfuse RCA] Failed to store errored session {session_key}: {e}")
 
 
 def run_rca_sync(hours: int = 1, langfuse_user_id: str = None) -> dict:
@@ -543,6 +684,7 @@ def run_rca_sync(hours: int = 1, langfuse_user_id: str = None) -> dict:
     rca_doc = {
         "timestamp": _utc_iso(),
         "window_hours": hours,
+        "rca_type": "manual",
         "langfuse_user_id": langfuse_user_id,
         "total_traces": len(traces),
         "total_errors": sum(1 for t in traces if t.get("status") == "error"),
@@ -572,6 +714,24 @@ def run_rca_sync(hours: int = 1, langfuse_user_id: str = None) -> dict:
 
     rca_doc.pop("_id", None)
     return rca_doc
+
+
+def _get_recent_trace_ids(langfuse_user_id: str, count: int) -> list:
+    """Fetch the most recently ingested trace_ids for a user."""
+    db = get_db()
+    if db is None:
+        return []
+    try:
+        docs = list(
+            db.langfuse_traces.find(
+                {"langfuse_user_id": langfuse_user_id},
+                {"trace_id": 1, "_id": 0}
+            ).sort("ingested_at", -1).limit(count)
+        )
+        return [d["trace_id"] for d in docs]
+    except Exception as e:
+        logger.error(f"[Langfuse] Failed to fetch recent trace IDs: {e}")
+        return []
 
 
 async def poll_langfuse():
@@ -612,21 +772,3 @@ async def poll_langfuse():
             logger.error(f"[Langfuse] Poll loop error: {e}")
 
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
-
-
-def _get_recent_trace_ids(langfuse_user_id: str, count: int) -> list:
-    """Fetch the most recently ingested trace_ids for a user."""
-    db = get_db()
-    if db is None:
-        return []
-    try:
-        docs = list(
-            db.langfuse_traces.find(
-                {"langfuse_user_id": langfuse_user_id},
-                {"trace_id": 1, "_id": 0}
-            ).sort("ingested_at", -1).limit(count)
-        )
-        return [d["trace_id"] for d in docs]
-    except Exception as e:
-        logger.error(f"[Langfuse] Failed to fetch recent trace IDs: {e}")
-        return []
