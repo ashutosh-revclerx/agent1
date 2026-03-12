@@ -237,7 +237,10 @@ async def run_rca_now(
     result = await loop.run_in_executor(None, run_rca_sync, hours, langfuse_user_id)
 
     if not result:
-        return {"message": "No traces found to analyze or LLM analysis failed", "rca": None}
+        raise HTTPException(
+            status_code=422,
+            detail="No traces found in the specified time window, or LLM analysis returned no usable result. Try a wider time range."
+        )
 
     # Remove raw_analysis from response
     result.pop("raw_analysis", None)

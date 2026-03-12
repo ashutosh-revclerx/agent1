@@ -390,7 +390,9 @@ RETURN ONLY JSON:"""
 <p><b>Blast Radius:</b> {incident.get('blast_radius', '')}</p>
 <p><b>Immediate Actions:</b></p><ul>{''.join(f'<li>{a}</li>' for a in immediate) or '<li>None</li>'}</ul>
 <p><b>Anomalies:</b> {len(anomalies)} | <b>Confidence:</b> {incident.get('confidence', 0):.0%}</p>"""
-            send_alert(f"[{sev}] {title}", html, user_id=self.user_id)
+            success, reason = send_alert(f"[{sev}] {title}", html, user_id=self.user_id)
+            if not success:
+                logger.warning(f"[Alerts] Email not sent: {reason}")
         except Exception as e:
             logger.error(f"[Alerts] Email error: {e}")
 

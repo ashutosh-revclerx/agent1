@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from app.core.config import LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST
 from app.services.mongodb_service import get_db
 from app.services.llm_service import ask_llm
+from app.services.email_service import send_alert
+from app.services.slack_service import send_slack_alert_text, slack_is_configured
 from app.core.helpers import parse_json
 from app.core.logging import logger
 
@@ -130,6 +132,142 @@ def _ingest_for_user_sync(langfuse_user_id: str) -> int:
 
     logger.info(f"[Langfuse] user={langfuse_user_id} | found={len(traces)} | new={ingested}")
     return ingested
+
+
+# ── Alert Helpers ──────────────────────────────────────────────────────────────
+
+def _derive_severity(health_score: int) -> str:
+    """Convert a Langfuse health score (0-100) to a severity label."""
+    if health_score < 50:
+        return "CRITICAL"
+    if health_score < 70:
+        return "HIGH"
+    if health_score < 85:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _get_app_user_ids_for_langfuse_users(langfuse_user_ids: list) -> list:
+    """Map langfuse_user_ids → app user_ids via langfuse_watched_users.added_by."""
+    db = get_db()
+    if db is None or not langfuse_user_ids:
+        return []
+    try:
+        docs = list(db.langfuse_watched_users.find(
+            {"langfuse_user_id": {"$in": langfuse_user_ids}},
+            {"added_by": 1, "_id": 0}
+        ))
+        # Deduplicate
+        return list({d["added_by"] for d in docs if d.get("added_by")})
+    except Exception as e:
+        logger.error(f"[Langfuse RCA] Failed to resolve app user IDs: {e}")
+        return []
+
+
+def _send_langfuse_alerts(rca_doc: dict, langfuse_user_ids: list = None):
+    """Send email + Slack alerts for a noteworthy Langfuse RCA result.
+
+    Resolves which app users to notify via langfuse_watched_users,
+    then calls send_alert() and send_slack_alert_text() per user.
+    Falls back to a broadcast (no user_id) if no IDs resolved.
+    """
+    anomalies = rca_doc.get("anomalies", [])
+    if not anomalies:
+        return  # Nothing to alert on
+
+    health = rca_doc.get("health_score", 100)
+    severity = _derive_severity(health)
+    summary = rca_doc.get("summary", "")
+    root_cause = rca_doc.get("root_cause", "")
+    total_errors = rca_doc.get("total_errors", 0)
+    total_traces = rca_doc.get("total_traces", 0)
+    total_cost = rca_doc.get("total_cost_usd", 0)
+    recs = rca_doc.get("recommendations", [])
+    immediate = [r["action"] for r in recs if isinstance(r, dict) and r.get("priority") == "immediate"]
+
+    subject = f"[LANGFUSE {severity}] Anomaly Detected — Health: {health}/100"
+
+    # Per-anomaly rows: Type | Severity | Status Code | Model | Description | Evidence
+    anomaly_rows = "".join(
+        f"<tr>"
+        f"<td><b>{a.get('type', '')}</b></td>"
+        f"<td style='color:{'red' if a.get('severity','') in ('high','critical') else 'orange'}'>{a.get('severity', '').upper()}</td>"
+        f"<td><code>{a.get('affected_trace', '') or '—'}</code></td>"
+        f"<td>{a.get('affected_model', '') or '—'}</td>"
+        f"<td>{a.get('description', '')}</td>"
+        f"<td><small>{a.get('evidence', '') or '—'}</small></td>"
+        f"</tr>"
+        for a in anomalies[:10]
+    )
+
+    # Status code breakdown across all traces in this RCA window
+    error_count = rca_doc.get("total_errors", 0)
+    success_count = max(0, total_traces - error_count)
+    status_rows = (
+        f"<tr><td>✅ success</td><td>{success_count}</td></tr>"
+        f"<tr><td>❌ error</td><td>{error_count}</td></tr>"
+    )
+
+    html = f"""<h2>🤖 [{severity}] Langfuse Anomaly Detected</h2>
+<p>
+  <b>Health Score:</b> {health}/100 &nbsp;|&nbsp;
+  <b>Errors:</b> {total_errors}/{total_traces} traces &nbsp;|&nbsp;
+  <b>Cost:</b> ${total_cost:.6f}
+</p>
+<p><b>Summary:</b> {summary}</p>
+<p><b>Root Cause:</b> {root_cause}</p>
+
+<h3>Trace Status Codes</h3>
+<table border="1" cellpadding="4" style="border-collapse:collapse;">
+  <tr><th>Status</th><th>Count</th></tr>
+  {status_rows}
+</table>
+
+<h3>Anomalies ({len(anomalies)})</h3>
+<table border="1" cellpadding="4" style="border-collapse:collapse;font-size:13px;">
+  <tr>
+    <th>Type</th><th>Severity</th><th>Affected Trace</th>
+    <th>Model</th><th>Description</th><th>Evidence / Status Code</th>
+  </tr>
+  {anomaly_rows}
+</table>
+
+<p><b>Immediate Actions:</b></p>
+<ul>{''.join(f'<li>{a}</li>' for a in immediate) or '<li>None</li>'}</ul>"""
+
+    # Slack: include evidence of first anomaly
+    first_evidence = anomalies[0].get("evidence", "") if anomalies else ""
+    slack_msg = (
+        f"🤖 *[LANGFUSE {severity}]* Anomaly Detected — Health: {health}/100\n"
+        f"📋 {summary}\n"
+        f"🔍 Root Cause: {root_cause}\n"
+        f"💥 Status Codes: ✅ success={success_count} ❌ error={error_count} (of {total_traces} traces)\n"
+        f"💰 Cost: ${total_cost:.6f}\n"
+        f"🔎 Evidence: {first_evidence or 'see email for details'}\n"
+        f"⚡ Actions: {', '.join(immediate) or 'None'}\n"
+        f"📊 Anomalies: {len(anomalies)}"
+    )
+
+
+    # Resolve app user IDs to notify
+    app_user_ids = _get_app_user_ids_for_langfuse_users(langfuse_user_ids or [])
+    targets = app_user_ids if app_user_ids else [None]  # None = broadcast (env .env recipients)
+
+    for app_user_id in targets:
+        # Email
+        success, reason = send_alert(subject, html, user_id=app_user_id)
+        if success:
+            logger.info(f"[Langfuse RCA] Email alert sent (user={app_user_id})")
+        else:
+            logger.warning(f"[Langfuse RCA] Email not sent (user={app_user_id}): {reason}")
+
+        # Slack
+        if slack_is_configured(user_id=app_user_id):
+            ok = send_slack_alert_text(slack_msg, user_id=app_user_id)
+            if ok:
+                logger.info(f"[Langfuse RCA] Slack alert sent (user={app_user_id})")
+            else:
+                logger.warning(f"[Langfuse RCA] Slack alert failed (user={app_user_id})")
 
 
 # ── RCA Analysis ───────────────────────────────────────────────────────────────
@@ -304,14 +442,31 @@ def run_rca_on_new_traces(new_trace_ids: list) -> dict:
     if not analysis:
         return {}
 
-    # If the LLM says nothing noteworthy, skip storing
-    noteworthy = analysis.get("noteworthy", True)
-    health = analysis.get("health_score", 100)
-    anomalies = analysis.get("anomalies", [])
+    # Count real errors from the ingested traces (source of truth — not the LLM)
+    actual_errors = sum(1 for t in new_traces if t.get("status") == "error")
 
+    # Override LLM "not noteworthy" if there are real error traces
     if not noteworthy and health >= 95 and len(anomalies) == 0:
-        logger.info(f"[Langfuse RCA] All normal (health={health}), skipping storage")
-        return {}
+        if actual_errors == 0:
+            logger.info(f"[Langfuse RCA] All normal (health={health}), skipping")
+            return {}
+        # Real errors detected — override LLM opinion, synthesize a minimal anomaly
+        logger.info(
+            f"[Langfuse RCA] LLM said normal but {actual_errors} error trace(s) found — overriding"
+        )
+        noteworthy = True
+        health = min(health, 80)  # cap health score
+        anomalies = [{
+            "type": "error_spike",
+            "severity": "high" if actual_errors > 1 else "medium",
+            "description": f"{actual_errors} trace(s) with status=error detected",
+            "affected_model": new_traces[0].get("model", "unknown"),
+            "affected_trace": new_traces[0].get("name", "unknown"),
+            "evidence": f"status=error in {actual_errors}/{len(new_traces)} new traces",
+        }]
+        analysis["anomalies"] = anomalies
+        analysis["noteworthy"] = True
+        analysis["health_score"] = health
 
     # Store RCA result
     rca_doc = {
@@ -337,6 +492,10 @@ def run_rca_on_new_traces(new_trace_ids: list) -> dict:
         )
     except Exception as e:
         logger.error(f"[Langfuse RCA] Failed to store RCA: {e}")
+
+    # Send email + Slack alerts for noteworthy anomalies
+    langfuse_user_ids = list({t.get("langfuse_user_id") for t in new_traces if t.get("langfuse_user_id")})
+    _send_langfuse_alerts(rca_doc, langfuse_user_ids=langfuse_user_ids)
 
     rca_doc.pop("_id", None)
     return rca_doc
@@ -404,6 +563,12 @@ def run_rca_sync(hours: int = 1, langfuse_user_id: str = None) -> dict:
         )
     except Exception as e:
         logger.error(f"[Langfuse RCA] Failed to store RCA: {e}")
+
+    # Send email + Slack alerts for noteworthy anomalies
+    if langfuse_user_id:
+        _send_langfuse_alerts(rca_doc, langfuse_user_ids=[langfuse_user_id])
+    else:
+        _send_langfuse_alerts(rca_doc, langfuse_user_ids=[])
 
     rca_doc.pop("_id", None)
     return rca_doc

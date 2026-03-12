@@ -47,7 +47,7 @@ def update_email_config(config: EmailConfig, user: User = Depends(get_current_us
 @router.post("/agent/test-email")
 def send_test_email(user: User = Depends(get_current_user)):
     """Send test email for current user"""
-    success = send_alert(
+    success, reason = send_alert(
         "[TEST] AI DevOps Monitor",
         """
         <h2>✅ Test Email</h2>
@@ -60,8 +60,8 @@ def send_test_email(user: User = Depends(get_current_user)):
     if success:
         return {"message": "Test email sent successfully!"}
     raise HTTPException(
-        status_code=500, 
-        detail="Failed to send test email. Check SMTP settings in .env file."
+        status_code=500,
+        detail=reason or "Failed to send test email. Check SMTP settings in .env file."
     )
 
 

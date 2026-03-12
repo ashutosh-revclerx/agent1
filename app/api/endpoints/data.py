@@ -44,7 +44,7 @@ def get_stats(user: User = Depends(get_current_user)):
     """Get stats for current user only"""
     db = get_db()
     if db is None:
-        return {"collections": {}}
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
     user_filter = {"user_id": user.id}
 
@@ -123,7 +123,7 @@ def get_batches(
     """Get batches for current user only"""
     db = get_db()
     if db is None:
-        return {"batches": []}
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
 
@@ -152,7 +152,7 @@ def get_incidents(
     """Get incidents for current user only"""
     db = get_db()
     if db is None:
-        return {"incidents": []}
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
     sort_fields = [("created_at_ist", -1), ("created_at", -1), ("timestamp", -1)]
@@ -182,7 +182,7 @@ def get_anomalies(
     """
     db = get_db()
     if db is None:
-        return {"anomalies": []}
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
 
@@ -220,7 +220,7 @@ def get_rca(
     """
     db = get_db()
     if db is None:
-        return {"rca": []}
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
 
@@ -289,7 +289,7 @@ def get_prom_metrics(
 ):
     db = get_db()
     if db is None:
-        return {"metrics": []}
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
     docs = list(db.metrics.find({"user_id": user.id}).sort([("timestamp", -1)]).skip(skip).limit(limit))
@@ -366,7 +366,7 @@ def get_metrics_by_ip(
     """Get metrics filtered by IP address for current user"""
     db = get_db()
     if db is None:
-        return {"metrics": []}
+        raise HTTPException(status_code=503, detail="Database unavailable")
     
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
     docs = list(db.metrics_batches.find({"ip": ip, "user_id": user.id}).sort([("collected_at_ist", -1)]).skip(skip).limit(limit))
@@ -390,7 +390,7 @@ def get_anomalies_by_ip(
     """Get anomalies filtered by IP address for current user"""
     db = get_db()
     if db is None:
-        return {"anomalies": []}
+        raise HTTPException(status_code=503, detail="Database unavailable")
     
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
     docs = list(db.anomalies.find({"ip": ip, "user_id": user.id}).sort([("created_at_ist", -1)]).skip(skip).limit(limit))
@@ -418,7 +418,7 @@ def get_incidents_by_ip(
     """Get incidents filtered by IP address for current user"""
     db = get_db()
     if db is None:
-        return {"incidents": []}
+        raise HTTPException(status_code=503, detail="Database unavailable")
     
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
     docs = list(db.incidents.find({"ip": ip, "user_id": user.id}).sort([("created_at_ist", -1)]).skip(skip).limit(limit))
@@ -444,7 +444,7 @@ def get_rca_by_ip(
     """Get RCA results filtered by IP address for current user"""
     db = get_db()
     if db is None:
-        return {"rca": []}
+        raise HTTPException(status_code=503, detail="Database unavailable")
     
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
     docs = list(db.rca.find({"ip": ip, "user_id": user.id}).sort([("timestamp_ist", -1)]).skip(skip).limit(limit))
@@ -475,7 +475,7 @@ def get_batches_by_ip(
     """Get batch results filtered by IP address for current user"""
     db = get_db()
     if db is None:
-        return {"batches": []}
+        raise HTTPException(status_code=503, detail="Database unavailable")
     
     limit = _clamp_limit(limit, default=10000, max_limit=100000)
     docs = list(db.metrics_batches.find({"ip": ip, "user_id": user.id}).sort([("collected_at_ist", -1)]).skip(skip).limit(limit))
