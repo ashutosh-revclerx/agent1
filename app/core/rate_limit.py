@@ -29,7 +29,7 @@ async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) 
     logger.warning(f"[RateLimit] Rate limit exceeded for {client_ip} on {request.url.path}")
     
     return Response(
-        content=f"Rate limit exceeded. Please try again in {exc.detail}",
+        content="Rate limit exceeded. Please try again in 60 seconds.",
         status_code=429,
-        headers={"Retry-After": str(exc.detail)}
+        headers={"Retry-After": "60"}
     )

@@ -3,7 +3,7 @@ Chat Routes
 AI chat endpoints with session management
 """
 import asyncio
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 from app.schemas.chat import ChatMessage, ChatResponse
 from app.schemas.user import User
@@ -46,21 +46,27 @@ User asks: {message.message}
 
 Provide a helpful, concise answer. Explain technical concepts simply if asked."""
 
-    result = await asyncio.get_running_loop().run_in_executor(
-        None,
-        ask_llm,
-        prompt,
-        "AI Chat",
-        {"user_message": message.message, **message.context},
-        session_id,
-        user.id,
-    )
-
-    response_text, tokens = result if result else (None, 0)
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            ask_llm,
+            prompt,
+            "AI Chat",
+            {"user_message": message.message, **message.context},
+            session_id,
+            user.id,
+        )
+        response_text, tokens = result if result else (None, 0)
+    except Exception as e:
+        logger.error(f"[Chat] LLM service error: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="AI service temporarily unavailable. Please try again shortly."
+        )
     session_manager.update_session(session_id, db, tokens)
 
-    return {
-        "response": response_text or "Sorry, I'm having trouble connecting to the AI service.",
-        "session_id": session_id,
-    }
+    return ChatResponse(
+        response=response_text or "Sorry, I'm having trouble connecting to the AI service.",
+        session_id=session_id,
+    )
 

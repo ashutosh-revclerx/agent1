@@ -13,10 +13,8 @@ class UserRegister(BaseModel):
     
     @field_validator('email')
     @classmethod
-    def validate_gmail_only(cls, v: str) -> str:
-        """Only allow gmail.com email addresses"""
-        if not v.lower().endswith('@gmail.com'):
-            raise ValueError('Only Gmail addresses (@gmail.com) are allowed for registration')
+    def validate_email_format(cls, v: str) -> str:
+        """Validate email format"""
         return v.lower()
 
 
