@@ -187,14 +187,14 @@ def _send_langfuse_alerts(rca_doc: dict, langfuse_user_ids: list = None):
 
     subject = f"[LANGFUSE {severity}] Anomaly Detected — Health: {health}/100"
 
-    # Per-anomaly rows: Type | Severity | Status Code | Model | Description | Evidence
+    # Per-anomaly rows: Type | Severity | Affected Trace | Model | Msg/Code | Evidence
     anomaly_rows = "".join(
         f"<tr>"
         f"<td><b>{a.get('type', '')}</b></td>"
         f"<td style='color:{'red' if a.get('severity','') in ('high','critical') else 'orange'}'>{a.get('severity', '').upper()}</td>"
         f"<td><code>{a.get('affected_trace', '') or '—'}</code></td>"
         f"<td>{a.get('affected_model', '') or '—'}</td>"
-        f"<td>{a.get('description', '')}</td>"
+        f"<td><code>{a.get('status_code', '') or 'N/A'}</code></td>"
         f"<td><small>{a.get('evidence', '') or '—'}</small></td>"
         f"</tr>"
         for a in anomalies[:10]
@@ -227,7 +227,7 @@ def _send_langfuse_alerts(rca_doc: dict, langfuse_user_ids: list = None):
 <table border="1" cellpadding="4" style="border-collapse:collapse;font-size:13px;">
   <tr>
     <th>Type</th><th>Severity</th><th>Affected Trace</th>
-    <th>Model</th><th>Description</th><th>Evidence / Status Code</th>
+    <th>Model</th><th>Status Code</th><th>Evidence / Message</th>
   </tr>
   {anomaly_rows}
 </table>
@@ -362,9 +362,10 @@ def _build_incremental_rca_prompt(new_traces: list, baseline: dict) -> str:
                 "type": "error_spike|latency_spike|cost_anomaly|throughput_drop",
                 "severity": "low|medium|high|critical",
                 "description": "string",
+                "status_code": "string - actual error code or HTTP status if seen",
                 "affected_model": "string",
                 "affected_trace": "string",
-                "evidence": "string",
+                "evidence": "string - brief technical log snippet or error message",
             }
         ],
         "root_cause": "string - root cause analysis (empty string if nothing noteworthy)",

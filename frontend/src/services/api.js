@@ -176,7 +176,7 @@ export const api = {
   // ============ CHAT ENDPOINT ============
 
   async chat(payload) {
-    return fetchJson(`${API_BASE_URL}/api/chat`, {
+    return fetchJson(`${API_BASE_URL}/chat/query`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

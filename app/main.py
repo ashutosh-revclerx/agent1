@@ -399,6 +399,17 @@ RETURN ONLY JSON:"""
             except Exception as e:
                 logger.error(f"[Alerts] Slack error: {e}")
 
+        anomaly_rows = "".join(
+            f"<tr>"
+            f"<td><b>{a.get('metric', 'unknown')}</b></td>"
+            f"<td><code>{a.get('instance', 'unknown')}</code></td>"
+            f"<td>{a.get('observed', '—')}</td>"
+            f"<td>{a.get('expected', '—')}</td>"
+            f"<td>{a.get('symptom', '')}</td>"
+            f"</tr>"
+            for a in anomalies[:10]
+        )
+
         try:
             html = f"""<h2>🚨 [{sev}] {title}</h2>
 <p><b>Window:</b> {window}</p>
@@ -406,7 +417,17 @@ RETURN ONLY JSON:"""
 <p><b>Root Cause:</b> {incident.get('root_cause', '')}</p>
 <p><b>Blast Radius:</b> {incident.get('blast_radius', '')}</p>
 <p><b>Immediate Actions:</b></p><ul>{''.join(f'<li>{a}</li>' for a in immediate) or '<li>None</li>'}</ul>
-<p><b>Anomalies:</b> {len(anomalies)} | <b>Confidence:</b> {incident.get('confidence', 0):.0%}</p>"""
+
+<h3>Anomalies ({len(anomalies)})</h3>
+<table border="1" cellpadding="4" style="border-collapse:collapse;font-size:13px;">
+  <tr>
+    <th>Metric</th><th>Instance</th><th>Observed</th><th>Expected</th><th>Symptom</th>
+  </tr>
+  {anomaly_rows}
+</table>
+
+<p><b>Confidence:</b> {incident.get('confidence', 0):.0%}</p>
+<p><small>Session ID: {session_id}</small></p>"""
             success, reason = send_alert(f"[{sev}] {title}", html, user_id=self.user_id)
             if not success:
                 logger.warning(f"[Alerts] Email not sent: {reason}")
@@ -766,7 +787,12 @@ app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5173/", "http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:5173", 
+        "http://localhost:5173/", 
+        "http://localhost:3000",
+        "http://localhost:3080"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

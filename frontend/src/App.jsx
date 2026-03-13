@@ -12,6 +12,7 @@ import EmailSettings from "./components/EmailSettings";
 import ServerSettings from "./components/ServerSettings";
 import MetricsOverview from "./components/MetricsOverview";
 import LangfuseMonitor from "./components/LangfuseMonitor";
+import AIAnalyst from "./components/AIAnalyst";
 
 function AppContent() {
   const { user, logout, isAuthenticated } = useAuth();
@@ -22,6 +23,7 @@ function AppContent() {
     { path: "/anomalies", name: "Anomalies", icon: "🚨" },
     { path: "/rca", name: "RCA Results", icon: "🔍" },
     { path: "/langfuse", name: "LLM Monitor", icon: "🤖" },
+    { path: "/chat", name: "AI Analyst", icon: "🧠" },
   ];
 
   const settingsItems = [
@@ -149,6 +151,7 @@ function AppContent() {
                       <Route path="/settings/servers" element={<ServerSettings />} />
                       <Route path="/settings/email" element={<EmailSettings />} />
                       <Route path="/langfuse" element={<LangfuseMonitor />} />
+                      <Route path="/chat" element={<AIAnalyst />} />
                     </Routes>
                   </div>
                 </main>
