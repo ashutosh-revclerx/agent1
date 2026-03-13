@@ -70,50 +70,67 @@ class BatchMonitor:
             session_id = f"{session_id}_user_{self.user_id}"
         return session_id
 
-    def is_processed(self, db, start: datetime, end: datetime) -> bool:
-        """Check if window already processed for this user."""
+    def claim_window(self, db, start: datetime, end: datetime) -> bool:
+        """
+        Atomically claim this window for processing using the unique index as a mutex.
+
+        Inserts a placeholder document with status="processing".  If the insert
+        succeeds this worker owns the window.  If it raises DuplicateKeyError the
+        window is already claimed (or fully processed) by another worker — skip it.
+
+        Returns True if the claim succeeded, False otherwise.
+        """
         if db is None:
             return False
-        query = {
-            "window_start_ist_str": format_ist(start, include_tz=True),
-            "window_end_ist_str": format_ist(end, include_tz=True)
-        }
-        # Add user_id filter for multi-user
-        if self.user_id:
-            query["user_id"] = self.user_id
-        return db.alert_windows.find_one(query) is not None
+        if not self.user_id:
+            logger.error("[Batch] user_id is required for window claiming — skipping")
+            return False
 
-    def mark_processed(self, db, start: datetime, end: datetime, session_id: str, incident_id: Any):
-        """Mark window as processed for this user."""
-        if db is None:
-            return
-
-        doc = {
+        placeholder = {
+            "user_id": self.user_id,
             "window_start_ist": start,
             "window_end_ist": end,
             "window_start_ist_str": format_ist(start, include_tz=True),
             "window_end_ist_str": format_ist(end, include_tz=True),
-
-            "processed_at_ist": now_ist(),
-            "processed_at_ist_str": format_ist(now_ist(), include_tz=True),
+            "status": "processing",
+            "claimed_at_ist": now_ist(),
             "timezone": "IST",
-
-            "langfuse_session_id": session_id,
-            "incident_id": incident_id,
         }
-        
-        # Add user_id for multi-user
-        if self.user_id:
-            doc["user_id"] = self.user_id
+        try:
+            db.alert_windows.insert_one(placeholder)
+            return True
+        except Exception as e:
+            # DuplicateKeyError → window already claimed or processed
+            if "duplicate" in str(e).lower() or "E11000" in str(e):
+                return False
+            logger.error(f"[Batch] Unexpected error claiming window: {e}", exc_info=True)
+            return False
+
+    def mark_processed(self, db, start: datetime, end: datetime, session_id: str, incident_id: Any):
+        """
+        Finalise the previously claimed window document with full metadata.
+        Uses $set on the existing placeholder — never upserts to avoid re-inserting
+        on a failed claim.
+        """
+        if db is None or not self.user_id:
+            return
 
         db.alert_windows.update_one(
             {
+                "user_id": self.user_id,
                 "window_start_ist_str": format_ist(start, include_tz=True),
                 "window_end_ist_str": format_ist(end, include_tz=True),
-                **({"user_id": self.user_id} if self.user_id else {})
             },
-            {"$set": doc},
-            upsert=True
+            {
+                "$set": {
+                    "status": "processed",
+                    "processed_at_ist": now_ist(),
+                    "processed_at_ist_str": format_ist(now_ist(), include_tz=True),
+                    "langfuse_session_id": session_id,
+                    "incident_id": incident_id,
+                }
+            },
+            upsert=False,   # must already exist from claim_window()
         )
 
     def build_prompt(self, metrics: List[Dict], start: datetime, end: datetime) -> str:
@@ -405,8 +422,11 @@ RETURN ONLY JSON:"""
         logger.info(f"[Batch]{user_log} Running: {window_str} | Session: {session_id}")
 
         db = get_db()
-        if self.is_processed(db, start, end):
-            logger.info(f"[Batch]{user_log} Already processed - skipping")
+
+        # Atomically claim the window — if this returns False another worker already
+        # owns it (or it was already processed) so we skip all expensive work.
+        if not self.claim_window(db, start, end):
+            logger.info(f"[Batch]{user_log} Window already claimed/processed — skipping")
             return
 
         langfuse = get_langfuse_client()
@@ -668,6 +688,20 @@ async def lifespan(app: FastAPI):
             
             db.alert_windows.create_index([("user_id", 1), ("window_start_ist_str", 1), ("window_end_ist_str", 1)], unique=True)
             db.alert_windows.create_index([("user_id", 1), ("window_start_ist_str", 1)])
+
+            # Migrate legacy alert_windows documents that pre-date per-tenant scoping.
+            # Documents without user_id would violate the unique index if two tenants
+            # process the same window string — tag them so they don't collide.
+            legacy_count = db.alert_windows.count_documents({"user_id": {"$exists": False}})
+            if legacy_count:
+                db.alert_windows.update_many(
+                    {"user_id": {"$exists": False}},
+                    {"$set": {"user_id": "__legacy__"}},
+                )
+                logger.warning(
+                    f"[Database] Migrated {legacy_count} legacy alert_windows "
+                    "documents to user_id='__legacy__'"
+                )
 
             # Langfuse ingestion indexes
             db.langfuse_traces.create_index("trace_id", unique=True)

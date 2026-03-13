@@ -327,7 +327,7 @@ def get_session_details(session_id: str, user: User = Depends(get_current_user))
         raise HTTPException(status_code=500, detail="Database not available")
 
     from app.services.session_service import session_manager
-    session = session_manager.get_session(session_id, db)
+    session = session_manager.get_session(session_id, db, owner_id=user.id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -343,7 +343,7 @@ def delete_session(session_id: str, user: User = Depends(get_current_user)):
     if db is None:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    result = db.chat_sessions.delete_one({"session_id": session_id})
+    result = db.chat_sessions.delete_one({"session_id": session_id, "user_id": user.id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -487,4 +487,3 @@ def get_batches_by_ip(
         d["window_end"] = _iso(d.get("window_end_ist") or d.get("window_end"))
     
     return {"batches": docs, "total": len(docs), "ip": ip}
-
