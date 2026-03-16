@@ -7,7 +7,10 @@ Includes LLM-based RCA analysis of ingested traces.
 import asyncio
 import json
 import uuid
+import time
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from datetime import datetime, timedelta, timezone
 
 from app.core.config import LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST
@@ -30,8 +33,85 @@ def _auth():
     return (LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY)
 
 
+def _headers():
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+    }
+
+
 def _ts(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _make_session() -> requests.Session:
+    """
+    Build a requests.Session with:
+    - Connection pooling (reuses TCP connections → avoids ConnectionResetError 10054)
+    - urllib3-level retry for transient network errors and 5xx/429 responses
+    - Exponential backoff between retries
+    """
+    session = requests.Session()
+    retry = Retry(
+        total=4,
+        backoff_factor=2,          # waits 2s, 4s, 8s between retries
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(
+        max_retries=retry,
+        pool_connections=2,
+        pool_maxsize=4,
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+# Module-level session — reused across polls to keep the connection alive
+_session: requests.Session = _make_session()
+
+
+def _request_with_retry(url: str, auth: tuple, params: dict, timeout: int = 30, max_retries: int = 3):
+    """
+    GET request using the persistent session (connection pooling + urllib3 retries).
+    Falls back to a fresh session on ConnectionReset so a stale socket never blocks polling.
+    """
+    session = _session  # local ref; reassigned on connection error without touching the global
+    for attempt in range(max_retries):
+        try:
+            response = session.get(
+                url, auth=auth, params=params, headers=_headers(), timeout=timeout
+            )
+
+            # 429 rate-limit: honour Retry-After if present, then retry
+            if response.status_code == 429:
+                wait = int(response.headers.get("Retry-After", 10))
+                logger.warning(f"[Langfuse] Rate limited (429) — waiting {wait}s before retry")
+                time.sleep(wait)
+                continue
+
+            if 500 <= response.status_code < 600:
+                logger.warning(f"[Langfuse] API {response.status_code} on attempt {attempt+1}/{max_retries}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+
+            if not response.ok:
+                logger.error(f"[Langfuse] API Error {response.status_code}: {response.text[:200]}")
+
+            return response
+
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            logger.warning(f"[Langfuse] Connection error on attempt {attempt+1}/{max_retries}: {e}")
+            # Recreate the session locally — the old one may have a dead socket
+            session = _make_session()
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            raise e
+    return None
 
 
 def _get_watched_user_ids_sync() -> list:
@@ -54,10 +134,23 @@ def _ingest_for_user_sync(langfuse_user_id: str) -> int:
         return 0
 
     now = datetime.now(timezone.utc)
-    since = now - timedelta(minutes=3)  # 3 min overlap to avoid missing traces
+
+    # Determine lookback window from last_polled_at stored per user.
+    # First poll (or after a long gap): look back 24 h to catch historical traces.
+    # Subsequent polls: overlap the last poll by 3 min to avoid missing edge traces.
+    watched_doc = db.langfuse_watched_users.find_one({"langfuse_user_id": langfuse_user_id})
+    last_polled_str = watched_doc.get("last_polled_at") if watched_doc else None
+    if last_polled_str:
+        try:
+            last_dt = datetime.fromisoformat(last_polled_str.replace("Z", "+00:00"))
+            since = last_dt - timedelta(minutes=3)
+        except Exception:
+            since = now - timedelta(hours=24)
+    else:
+        since = now - timedelta(hours=24)  # first-time poll: full 24-h backfill
 
     try:
-        response = requests.get(
+        response = _request_with_retry(
             f"{LANGFUSE_HOST}/api/public/traces",
             auth=_auth(),
             params={
@@ -66,8 +159,10 @@ def _ingest_for_user_sync(langfuse_user_id: str) -> int:
                 "toTimestamp": _ts(now),
                 "userId": langfuse_user_id,
             },
-            timeout=15,
+            timeout=60,
         )
+        if response is None:
+            return 0
         response.raise_for_status()
         traces = response.json().get("data", [])
     except Exception as e:
@@ -89,12 +184,14 @@ def _ingest_for_user_sync(langfuse_user_id: str) -> int:
         status = "success"
 
         try:
-            obs_response = requests.get(
+            obs_response = _request_with_retry(
                 f"{LANGFUSE_HOST}/api/public/observations",
                 auth=_auth(),
                 params={"traceId": trace_id, "type": "GENERATION", "limit": 100},
-                timeout=15,
+                timeout=60,
             )
+            if obs_response is None:
+                continue
             obs_response.raise_for_status()
             observations = obs_response.json().get("data", [])
 
@@ -131,6 +228,17 @@ def _ingest_for_user_sync(langfuse_user_id: str) -> int:
             logger.error(f"[Langfuse] Failed to insert trace {trace_id}: {e}")
 
     logger.info(f"[Langfuse] user={langfuse_user_id} | found={len(traces)} | new={ingested}")
+
+    # Update last_polled_at for all watched-user records with this langfuse_user_id
+    # so the next poll uses the correct overlap window instead of a full 24-h backfill.
+    try:
+        db.langfuse_watched_users.update_many(
+            {"langfuse_user_id": langfuse_user_id},
+            {"$set": {"last_polled_at": _utc_iso()}},
+        )
+    except Exception as e:
+        logger.warning(f"[Langfuse] Failed to update last_polled_at for {langfuse_user_id}: {e}")
+
     return ingested
 
 

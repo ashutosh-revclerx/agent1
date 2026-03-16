@@ -67,3 +67,29 @@ In your agent's instructions, explicitly tell it when and how to use the tools:
 - **Specificity**: Give agents specific scopes (e.g., "Network Expert", "Database Guru").
 - **Verification**: Always instruct agents to "never make up data" and to report if a tool returns an error.
 - **Formatting**: Tell agents to use markdown tables for metric data to improve readability.
+- **Tone**: Encourage a helpful but professional "Production Engineer" tone.
+
+## 5. Security & Authentication (Critical)
+
+The backend API uses **Dual-Mode Authentication**:
+1.  **Firebase (User Portal)**: Users in the Dashboard use Google/Email login.
+2.  **API Key (LibreChat)**: Agents use the `X-API-Key` header for service-to-service calls.
+
+### How to update the API Key:
+1.  Change `LIBRECHAT_API_KEY` in your `.env`.
+2.  Update the `AUTH` instructions in the agent's persona.
+3.  Restart the backend server.
+
+---
+
+## 🛠️ Troubleshooting for Team Members
+
+| Issue | Likely Cause | Solution |
+| :--- | :--- | :--- |
+| **Agent says "Tools failed"** | Backend server is down | Check if `uvicorn` is running on port 8001. |
+| **Authentication Error (401)** | API Key mismatch | Ensure `.env` matches the key in the agent instructions. |
+| **Domain Not Found** | Docker network issue | If running in Docker, ensure `host.docker.internal` is in `allowedDomains`. |
+| **No health summary** | Monitoring not active | Ensure the batch monitor job is running and processing metrics. |
+
+---
+*Created by the SRE Team 🚀*

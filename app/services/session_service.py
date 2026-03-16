@@ -4,7 +4,7 @@ Manages chat session lifecycle and metadata
 """
 import uuid
 from typing import Optional, Dict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from app.core.logging import logger
 
 
@@ -20,8 +20,8 @@ class SessionManager:
         session_data = {
             "session_id": session_id,
             "user_id": user_id,
-            "created_at": datetime.utcnow(),
-            "last_activity": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
+            "last_activity": datetime.now(timezone.utc),
             "message_count": 0,
             "total_tokens": 0,
         }
@@ -57,7 +57,7 @@ class SessionManager:
 
     def update_session(self, session_id: str, db, tokens: int = 0):
         """Update session activity"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if db is not None:
             try:
                 db.chat_sessions.update_one(
@@ -79,7 +79,7 @@ class SessionManager:
         """Remove sessions older than specified hours"""
         if db is None:
             return
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         try:
             result = db.chat_sessions.delete_many({"last_activity": {"$lt": cutoff}})
             if result.deleted_count > 0:
@@ -87,7 +87,7 @@ class SessionManager:
 
             to_remove = [
                 sid for sid, data in self.active_sessions.items()
-                if data.get("last_activity", datetime.utcnow()) < cutoff
+                if data.get("last_activity", datetime.now(timezone.utc)) < cutoff
             ]
             for sid in to_remove:
                 del self.active_sessions[sid]

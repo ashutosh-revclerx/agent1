@@ -26,15 +26,19 @@ class ChatService:
 
     # ─── Session Listing ────────────────────────────────────────────────────────
 
-    def list_recent_sessions(self, db, limit: int = 5) -> Dict[str, Any]:
+    def list_recent_sessions(self, db, limit: int = 5, user_id: str = None) -> Dict[str, Any]:
         """List the most recent monitoring and langfuse sessions with rich metadata."""
         if db is None:
             return {"monitoring": [], "langfuse": [], "error": "Database unavailable"}
 
-        # Monitoring: pull from incidents (richer: has severity, title, ip:port)
+        # Monitoring: pull from incidents scoped to this user
+        mon_filter = {}
+        if user_id:
+            mon_filter["user_id"] = user_id
+
         incident_docs = list(
             db.incidents.find(
-                {},
+                mon_filter,
                 {
                     "langfuse_session_id": 1, "window_start_ist_str": 1,
                     "window_end_ist_str": 1, "ip": 1, "port": 1,
@@ -71,16 +75,30 @@ class ChatService:
                 "user_id": doc.get("user_id"),
             })
 
-        # Langfuse: pull from stored sessions (error sessions only) + raw RCA
-        lf_stored = list(
-            db.langfuse_stored_sessions.find(
-                {},
-                {
-                    "session_id": 1, "stored_at": 1, "metrics": 1,
-                    "langfuse_user_ids": 1, "latest_rca": 1, "_id": 0
-                }
-            ).sort("stored_at", -1).limit(limit)
-        )
+        # Langfuse: pull from stored sessions scoped to langfuse users this app user watches
+        lf_filter = {}
+        if user_id:
+            watching = list(db.langfuse_watched_users.find(
+                {"added_by": user_id}, {"langfuse_user_id": 1, "_id": 0}
+            ))
+            watched_ids = [w["langfuse_user_id"] for w in watching]
+            if watched_ids:
+                lf_filter["langfuse_user_ids"] = {"$in": watched_ids}
+            else:
+                # User not watching any Langfuse users — skip the query
+                lf_filter = None
+
+        lf_stored = []
+        if lf_filter is not None:
+            lf_stored = list(
+                db.langfuse_stored_sessions.find(
+                    lf_filter,
+                    {
+                        "session_id": 1, "stored_at": 1, "metrics": 1,
+                        "langfuse_user_ids": 1, "latest_rca": 1, "_id": 0
+                    }
+                ).sort("stored_at", -1).limit(limit)
+            )
 
         langfuse = []
         for doc in lf_stored:
@@ -97,18 +115,35 @@ class ChatService:
                 "langfuse_user_ids": doc.get("langfuse_user_ids", []),
             })
 
-        # If no stored sessions, fall back to batch RCA list
+        # If no stored sessions, fall back to batch RCA list (scoped to watched users)
         if not langfuse:
-            rca_docs = list(
-                db.langfuse_rca.find(
-                    {},
-                    {
-                        "timestamp": 1, "langfuse_user_id": 1, "rca_type": 1,
-                        "health_score": 1, "summary": 1, "total_errors": 1,
-                        "total_traces": 1, "_id": 0
-                    }
-                ).sort("timestamp", -1).limit(limit)
-            )
+            # Build RCA filter: None means "skip query entirely"
+            if user_id:
+                # watched_ids was set above when user_id was provided
+                _wids = watched_ids if lf_filter is not None else []
+                if _wids:
+                    rca_filter = {"$or": [
+                        {"langfuse_user_id": {"$in": _wids}},
+                        {"langfuse_user_ids": {"$in": _wids}},
+                    ]}
+                else:
+                    rca_filter = None  # user watches nobody → nothing to query
+            else:
+                rca_filter = {}  # no user constraint → query all
+
+            if rca_filter is not None:
+                rca_docs = list(
+                    db.langfuse_rca.find(
+                        rca_filter,
+                        {
+                            "timestamp": 1, "langfuse_user_id": 1, "rca_type": 1,
+                            "health_score": 1, "summary": 1, "total_errors": 1,
+                            "total_traces": 1, "_id": 0
+                        }
+                    ).sort("timestamp", -1).limit(limit)
+                )
+            else:
+                rca_docs = []
             for doc in rca_docs:
                 langfuse.append({
                     "session_id": doc.get("langfuse_user_id", "—"),
@@ -124,17 +159,27 @@ class ChatService:
 
     # ─── Latest Data (no session ID needed) ─────────────────────────────────────
 
-    def get_latest_snapshot(self, db) -> Dict[str, Any]:
+    def get_latest_snapshot(self, db, user_id: str = None) -> Dict[str, Any]:
         """
-        Return the most recent monitoring incident + Langfuse RCA and traces — 
+        Return the most recent monitoring incident + Langfuse RCA and traces —
         no session_id required. Ideal for 'give me a health summary' queries.
+        Scoped to the given app user_id when provided.
         """
         if db is None:
             return {}
 
-        # Latest monitoring incident
+        # Resolve which Langfuse user IDs this app user is watching (needed for both RCA and traces)
+        watched_lf_ids = []
+        if user_id:
+            watching = list(db.langfuse_watched_users.find(
+                {"added_by": user_id}, {"langfuse_user_id": 1, "_id": 0}
+            ))
+            watched_lf_ids = [w["langfuse_user_id"] for w in watching]
+
+        # Latest monitoring incident scoped to this user
+        mon_filter = {"user_id": user_id} if user_id else {}
         incident = db.incidents.find_one(
-            {}, {"_id": 0}, sort=[("window_start_ist_str", -1)]
+            mon_filter, {"_id": 0}, sort=[("window_start_ist_str", -1)]
         )
         if incident:
             session_id = incident.get("langfuse_session_id")
@@ -143,23 +188,43 @@ class ChatService:
                 anomalies = list(
                     db.anomalies.find({"langfuse_session_id": session_id}, {"_id": 0}).limit(10)
                 )
-            rca = db.rca.find_one(
-                {"langfuse_session_id": session_id} if session_id else {}, {"_id": 0},
-                sort=[("created_at_ist", -1)]
-            )
+            rca_q = {"langfuse_session_id": session_id} if session_id else {}
+            if user_id:
+                rca_q["user_id"] = user_id
+            rca = db.rca.find_one(rca_q, {"_id": 0}, sort=[("created_at_ist", -1)])
         else:
             anomalies = []
             rca = None
 
-        # Latest Langfuse RCA
-        lf_rca = db.langfuse_rca.find_one(
-            {}, {"_id": 0, "raw_analysis": 0}, sort=[("timestamp", -1)]
-        )
+        # Latest Langfuse RCA scoped to watched users
+        if watched_lf_ids:
+            lf_rca_filter = {"$or": [
+                {"langfuse_user_id": {"$in": watched_lf_ids}},
+                {"langfuse_user_ids": {"$in": watched_lf_ids}},
+            ]}
+        elif user_id:
+            lf_rca_filter = None  # user watching nobody → no RCA
+        else:
+            lf_rca_filter = {}
 
-        # Recent Langfuse traces (last 10)
-        lf_traces = list(
-            db.langfuse_traces.find({}, {"_id": 0}).sort("timestamp", -1).limit(10)
-        )
+        lf_rca = None
+        if lf_rca_filter is not None:
+            lf_rca = db.langfuse_rca.find_one(
+                lf_rca_filter, {"_id": 0, "raw_analysis": 0}, sort=[("timestamp", -1)]
+            )
+
+        # Recent Langfuse traces scoped to watched users
+        lf_traces_filter = {}
+        if watched_lf_ids:
+            lf_traces_filter["langfuse_user_id"] = {"$in": watched_lf_ids}
+        elif user_id:
+            lf_traces_filter = None  # user watching nobody
+
+        lf_traces = []
+        if lf_traces_filter is not None:
+            lf_traces = list(
+                db.langfuse_traces.find(lf_traces_filter, {"_id": 0}).sort("timestamp", -1).limit(10)
+            )
 
         return {
             "monitoring": {
@@ -443,7 +508,7 @@ RESPONSE:"""
         if db is None:
             return "Error: Database unavailable."
 
-        snapshot = self.get_latest_snapshot(db)
+        snapshot = self.get_latest_snapshot(db, user_id=user_id)
         context_str = self.format_snapshot_for_llm(snapshot)
 
         prompt = f"""You are an expert DevOps & LLM Operations assistant embedded in an AI monitoring system.

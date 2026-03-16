@@ -30,9 +30,9 @@ import requests
 
 load_dotenv()
 
-LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
-LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY", "")
-LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com").rstrip("/")
+LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY", "").strip()
+LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY", "").strip()
+LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com").strip().rstrip("/")
 
 # Use a dedicated test user so real data is not polluted
 USER_ID = "anon"
@@ -43,6 +43,7 @@ _creds = base64.b64encode(f"{LANGFUSE_PUBLIC_KEY}:{LANGFUSE_SECRET_KEY}".encode(
 HEADERS = {
     "Authorization": f"Basic {_creds}",
     "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
 }
 INGEST_URL = f"{LANGFUSE_HOST}/api/public/ingestion"
 
@@ -59,11 +60,12 @@ def ingest(events: list) -> bool:
             INGEST_URL,
             headers=HEADERS,
             json={"batch": events},
-            timeout=15,
+            timeout=60,
         )
         if resp.ok:
             return True
-        print(f"    [!] Langfuse API error: {resp.status_code} {resp.text[:200]}")
+        print(f"    [!] Langfuse API error: {resp.status_code} {resp.reason}")
+        print(f"    [!] Details: {resp.text}")
         return False
     except Exception as e:
         print(f"    [!] Request error: {e}")
@@ -404,8 +406,9 @@ if __name__ == "__main__":
         for num, fn in CASES.items():
             fn()
             # Small pause between cases so traces don't overlap in the 3-min ingest window
+            # Increased to 5s to prevent overloading the Free Tier Langfuse server
             if num < len(CASES):
-                time.sleep(2)
+                time.sleep(5)
 
     print(f"\n{'═' * 60}")
     print("  All traces sent. Poller ingests every 2 min.")

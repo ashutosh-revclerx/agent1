@@ -3,6 +3,7 @@ import os
 import json
 from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime, timedelta, timezone
+from bson import ObjectId
 
 from app.core.config import BATCH_INTERVAL_MINUTES, PROM_URL
 from app.core.logging import logger
@@ -162,8 +163,11 @@ RETURN ONLY JSON:"""
         try:
             batch_doc = {
                 "window_start_ist": start, "window_end_ist": end,
+                "window_start_ist_str": format_ist(start, include_tz=True),
+                "window_end_ist_str": format_ist(end, include_tz=True),
                 "collected_at_ist": created_ist, "user_id": self.user_id,
-                "metrics": metrics, "analysis": analysis
+                "langfuse_session_id": session_id,
+                "metrics": metrics, "analysis": analysis,
             }
             res_batch = db.metrics_batches.insert_one(batch_doc)
             batch_id = res_batch.inserted_id
@@ -171,7 +175,10 @@ RETURN ONLY JSON:"""
             inc_doc = {
                 "batch_id": batch_id, "user_id": self.user_id,
                 "created_at_ist": created_ist, "ip": ip, "port": port,
-                **inc
+                "langfuse_session_id": session_id,
+                "window_start_ist_str": format_ist(start, include_tz=True),
+                "window_end_ist_str": format_ist(end, include_tz=True),
+                **inc,
             }
             res_inc = db.incidents.insert_one(inc_doc)
             incident_id = res_inc.inserted_id
@@ -180,7 +187,9 @@ RETURN ONLY JSON:"""
                 a_doc = {
                     "batch_id": batch_id, "incident_id": incident_id,
                     "user_id": self.user_id, "created_at_ist": created_ist,
-                    "ip": ip, "port": port, **a
+                    "ip": ip, "port": port,
+                    "langfuse_session_id": session_id,
+                    **a,
                 }
                 db.anomalies.insert_one(a_doc)
 
@@ -352,11 +361,20 @@ class UserBatchMonitorManager:
         if db is None: return
         user_ids = db.targets.distinct("user_id", {"enabled": True})
         for uid in user_ids:
-            if uid and uid not in self.monitors:
-                logger.info(f"[MonitorManager] Starting monitor for user: {uid}")
-                m = BatchMonitor(user_id=uid)
-                m.start()
-                self.monitors[uid] = m
+            if not uid or uid in self.monitors:
+                continue
+            # Only start monitors for users with active accounts in DB
+            try:
+                user_doc = db.users.find_one({"_id": ObjectId(uid), "active": True})
+            except Exception:
+                user_doc = None
+            if not user_doc:
+                logger.debug(f"[MonitorManager] Skipping monitor for inactive/unknown user: {uid}")
+                continue
+            logger.info(f"[MonitorManager] Starting monitor for user: {uid}")
+            m = BatchMonitor(user_id=uid)
+            m.start()
+            self.monitors[uid] = m
         
         to_remove = [uid for uid in self.monitors if uid not in user_ids]
         for uid in to_remove:

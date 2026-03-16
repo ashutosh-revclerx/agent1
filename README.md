@@ -14,14 +14,14 @@
 
 ## Recent Updates
 
+### v2.6.0 - March 2026
+- **Connectivity Resilience**: Implemented persistent connection pooling and `urllib3`-level exponential backoff in the Langfuse ingestion service to eliminate `ConnectionResetError` (10054).
+- **Intelligent Backfill**: Ingestion service now tracks `last_polled_at` and automatically performs up to a 24-hour backfill on startup or for new users.
+- **Frontend Auto-Pagination**: The API service now automatically fetches all data pages for Anomalies, RCA, Batches, and Incidents, providing a seamless scrolling experience.
+- **Manual RCA Trigger**: Added capability to trigger Root Cause Analysis on-demand from the Langfuse Monitor UI.
+- **Hardened Security**: Environment loading now uses `.strip()` to prevent hidden trailing spaces from corrupting credentials; improved SSRF validation.
+
 ### v2.5.0 - March 2026
-- **LibreChat Analysis Hub**: Integrated LibreChat as the primary AI SRE command center with a specialized **AI SRE Analyst** persona.
-- **Custom SRE Tools**: Deep-dive tools for AI-SRE to query Prometheus health, list incidents, and perform cross-platform RCA.
-- **Firebase Authentication**: Replaced custom user auth with Firebase email/password and Google OAuth; JWT tokens issued after Firebase ID verification.
-- **Langfuse Monitor Dashboard**: New UI for watching Langfuse users, viewing traces, and triggering RCA from ingested data.
-- **Enhanced RCA Alerts**: Alert emails now include detailed RCA, anomaly tables, and suggested action plans.
-- **Gemini 2.5 Pro**: Primary LLM updated to `gemini-2.5-pro` with Gemma3 as automatic local fallback.
-- **SSRF Protection**: Configurable flag to block private IP targets for production hardening.
 
 ---
 
@@ -38,9 +38,12 @@ AI DevOps Monitor is a complete multi-user monitoring platform that collects Pro
 - **Batch Analysis** - Holistic incident detection by analyzing complete metric batches per user
 - **Multi-User Architecture** - Complete user isolation with user_id filtering on every database query
 - **Intelligent Alerting** - Email and Slack alerts with automated Root Cause Analysis and remediation steps
-- **Dynamic Target Management** - Add/remove Prometheus targets from the UI; targets.json auto-regenerated
+- **Dynamic Target Management** - Add/remove Prometheus targets from the UI; targets.json auto-regenerated with auto-synchronization
 - **Grafana Integration** - Universal dashboards auto-detecting Windows Exporter and Node Exporter metrics
 - **IST Timezone** - Consistent Indian Standard Time across all timestamps and batch windows
+- **Resilient Ingestion** - Robust metric ingestion pipeline with retry mechanisms and error handling.
+- **Intelligent Backfill** - Automatically backfills missing metric data to ensure continuous analysis.
+- **Auto-Pagination** - Frontend API client automatically handles pagination for large datasets.
 
 ---
 
@@ -830,6 +833,13 @@ Alerts use **per-user configuration** — not global `.env` settings.
 2. Settings → Email Config or Servers → configure and enable
 3. Click Test Email / Test Slack to verify
 4. Check SMTP credentials and App Password for Gmail
+
+### Langfuse Connection Reset / 401 Unauthorized
+
+If you see "An existing connection was forcibly closed by the remote host" or 401 errors:
+1. **Check .env Spaces**: Ensure there are no trailing spaces after `LANGFUSE_HOST` or `LANGFUSE_SECRET_KEY`.
+2. **Restart Backend**: Run `uvicorn` again to reload the cleaned environment.
+3. **Session Pooling**: v2.6.0 includes automatic connection pooling; if issues persist, check if your firewall blocks non-browser User-Agents (our client now spoofs a Chrome header).
 
 ### Frontend 401 / CORS Errors
 

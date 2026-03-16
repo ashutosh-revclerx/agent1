@@ -20,6 +20,13 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 _SYSTEM_USER = User(id="librechat_system", username="librechat", email="librechat@system", active=True)
 
+_SYSTEM_USER_ID = "librechat_system"  # sentinel: skip per-user scoping for this caller
+
+
+def _scoped_user_id(user: User) -> str | None:
+    """Return user.id for per-user DB scoping, or None for the system/LibreChat user."""
+    return None if user.id == _SYSTEM_USER_ID else user.id
+
 
 async def get_chat_user(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
@@ -67,7 +74,7 @@ async def query_chat(
         response = await chat_service.query_session(
             session_id=query.session_id,
             context_type=query.type,
-            user_id=current_user.id,
+            user_id=_scoped_user_id(current_user),
             message=query.message,
         )
         if not response:
@@ -93,7 +100,7 @@ async def query_latest(
     try:
         logger.info(f"[Chat] Latest query by user={current_user.id}: {body.message[:60]}")
         response = await chat_service.query_latest(
-            user_id=current_user.id,
+            user_id=_scoped_user_id(current_user),
             message=body.message,
         )
         if not response:
@@ -119,7 +126,7 @@ async def list_sessions(
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
-    result = chat_service.list_recent_sessions(db, limit)
+    result = chat_service.list_recent_sessions(db, limit, user_id=_scoped_user_id(current_user))
     return result
 
 

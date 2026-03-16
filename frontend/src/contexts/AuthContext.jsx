@@ -34,19 +34,26 @@ export function AuthProvider({ children }) {
     checkRedirect();
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      console.log('[AuthContext] Auth state changed:', firebaseUser ? 'User Logged In' : 'User Logged Out');
+      
       if (firebaseUser) {
+        // SET USER IMMEDIATELY to prevent ProtectedRoute from redirecting
+        // We initialize with essential Firebase info
+        setUser(firebaseUser);
+        
         try {
           // Get ID token and store it for API calls
           const token = await getIdToken(firebaseUser);
           localStorage.setItem('token', token);
+          console.log('[AuthContext] Token refreshed');
           
           // Fetch additional user data from our backend
           const userData = await api.getCurrentUser();
+          console.log('[AuthContext] User data synced from backend');
           setUser({ ...firebaseUser, ...userData });
         } catch (error) {
-          console.error('Failed to sync user with backend:', error);
-          // Even if backend fails, we have the firebase user
-          setUser(firebaseUser);
+          console.error('[AuthContext] Failed to sync user with backend:', error);
+          // Keep the firebase user even if backend enrichment fails
         }
       } else {
         setUser(null);

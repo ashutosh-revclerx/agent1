@@ -1,12 +1,72 @@
 [
   {
     "targets": [
+      "192.168.1.4:9182"
+    ],
+    "labels": {
+      "user_id": "69999d8241b8b92a94be4509",
+      "job": "dynamic-targets",
+      "name": "any server"
+    }
+  },
+  {
+    "targets": [
+      "192.168.56.1:9182"
+    ],
+    "labels": {
+      "user_id": "69999d8241b8b92a94be4509",
+      "job": "dynamic-targets",
+      "name": "server-pro"
+    }
+  },
+  {
+    "targets": [
+      "192.168.29.1:9182"
+    ],
+    "labels": {
+      "job": "dynamic-targets",
+      "name": "server",
+      "user_id": "69999d8241b8b92a94be4509"
+    }
+  },
+  {
+    "targets": [
+      "192.168.29.224:9182"
+    ],
+    "labels": {
+      "job": "dynamic-targets",
+      "name": "windows  exporter",
+      "user_id": "69999d8241b8b92a94be4509"
+    }
+  },
+  {
+    "targets": [
       "192.168.29.224:9182"
     ],
     "labels": {
       "job": "dynamic-targets",
       "name": "rajshekhar server",
       "user_id": "69999d8241b8b92a94be4509"
+    }
+  },
+  {
+    "targets": [
+      "192.168.29.224:9182"
+    ],
+    "labels": {
+      "job": "dynamic-targets",
+      "name": "server",
+      "user_id": "69999db841b8b92a94be450a"
+    }
+  },
+  {
+    "targets": [
+      "192.168.29.224:9182"
+    ],
+    "labels": {
+      "job": "dynamic-targets",
+      "name": "rajshekhar_pro",
+      "user_id": "69b8776cc88bf6b93efd1b61"
     }
   }
 ]

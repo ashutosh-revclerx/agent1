@@ -128,6 +128,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"[Database] Index warning: {e}")
 
+    # Regenerate targets.json from DB on startup to ensure user_id ↔ IP labels are in sync.
+    # This fixes stale label mappings left by manual edits or migration scripts.
+    if db is not None:
+        try:
+            from app.api.endpoints.target import _regenerate_targets_file
+            _regenerate_targets_file(db)
+            logger.info("[Targets] targets.json regenerated from DB on startup")
+        except Exception as e:
+            logger.warning(f"[Targets] Could not regenerate targets.json on startup: {e}")
+
     # Start multi-user monitor manager
     monitor_manager.start()
     await monitor_manager.refresh_monitors()  # Initial refresh
@@ -186,8 +196,6 @@ app.add_middleware(
         "http://localhost:5174",
         "http://localhost:5174/",
         "http://localhost:5175",
-        "http://localhost:3000",
-        "http://localhost:3080",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
         "http://127.0.0.1:5175",

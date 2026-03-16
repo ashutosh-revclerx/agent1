@@ -252,7 +252,14 @@ def get_rca(
         watched_ids = [doc["langfuse_user_id"] for doc in watching_docs]
         
         if watched_ids:
-            langfuse_docs = list(db.langfuse_rca.find({"langfuse_user_id": {"$in": watched_ids}}))
+            # Match both scalar langfuse_user_id AND array langfuse_user_ids
+            # (batch RCAs store None in langfuse_user_id but populate langfuse_user_ids)
+            langfuse_docs = list(db.langfuse_rca.find({
+                "$or": [
+                    {"langfuse_user_id": {"$in": watched_ids}},
+                    {"langfuse_user_ids": {"$in": watched_ids}},
+                ]
+            }))
         
         for d in langfuse_docs:
             _stringify_id(d)
