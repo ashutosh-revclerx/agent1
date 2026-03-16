@@ -26,7 +26,7 @@ async def get_chat_user(
     api_key: Optional[str] = Query(None),           # fallback for query-string auth
     current_user: Optional[User] = Depends(get_current_user_optional)
 ) -> User:
-    """Accept JWT, header API Key, query-string API Key, or default to system user."""
+    """Accept JWT, header API Key, or query-string API Key. Strictly enforced."""
     if current_user:
         return current_user
 
@@ -35,10 +35,12 @@ async def get_chat_user(
     if provided:
         if provided == valid_api_key:
             return _SYSTEM_USER
-        logger.warning(f"[Chat] Invalid API key: {provided!r}")
+        masked = provided[:4] + "***" if len(provided) > 4 else "***"
+        logger.warning(f"[Chat] Invalid API key attempted: {masked}")
+        raise HTTPException(status_code=401, detail="Invalid API Key")
 
-    logger.info("[Chat] No auth — defaulting to system user")
-    return _SYSTEM_USER
+    logger.warning("[Chat] No valid authentication provided")
+    raise HTTPException(status_code=401, detail="Authentication required")
 
 
 class ChatQuery(BaseModel):
@@ -75,7 +77,7 @@ async def query_chat(
         raise
     except Exception as e:
         logger.error(f"[Chat] Query error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/latest")
@@ -101,7 +103,7 @@ async def query_latest(
         raise
     except Exception as e:
         logger.error(f"[Chat] Latest query error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/sessions")
@@ -115,6 +117,8 @@ async def list_sessions(
     Call this first to discover session IDs before calling /chat/query.
     """
     db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
     result = chat_service.list_recent_sessions(db, limit)
     return result
 

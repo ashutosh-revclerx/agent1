@@ -558,6 +558,7 @@ def _store_errored_sessions(db, error_traces: list, rca_doc: dict):
         # Run a dedicated RCA on the FULL session context
         # This is more accurate than the batch RCA that ran on all new traces
         session_rca = {}
+        session_rca_doc = None
         try:
             session_prompt = _build_rca_prompt(
                 all_session_traces,
@@ -609,10 +610,8 @@ def _store_errored_sessions(db, error_traces: list, rca_doc: dict):
             except Exception as e:
                 logger.error(f"[Langfuse RCA] Failed to store session RCA for {session_key}: {e}")
 
-        # Safely resolve which RCA to attach — session-level if available, batch as fallback
-        # session_rca_doc is only defined inside the `if session_rca:` block above,
-        # so we use locals().get() to avoid NameError when session RCA failed
-        resolved_rca = locals().get("session_rca_doc") or {
+        # Resolve which RCA to attach — session-level if available, batch as fallback
+        resolved_rca = session_rca_doc or {
             k: v for k, v in rca_doc.items()
             if k not in ("_id", "raw_analysis")
         }

@@ -25,7 +25,14 @@ ph = PasswordHasher(
 )
 
 # JWT settings
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-this-in-production")
+_DEFAULT_SECRET = "your-secret-key-change-this-in-production"
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", _DEFAULT_SECRET)
+if SECRET_KEY == _DEFAULT_SECRET:
+    import warnings
+    warnings.warn(
+        "JWT_SECRET_KEY is not set — using insecure default. Set JWT_SECRET_KEY in your environment.",
+        stacklevel=1,
+    )
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
@@ -151,57 +158,56 @@ async def get_current_user(
 ) -> User:
     """
     Dependency to get current authenticated user.
-    Maintains compatibility with local JWTs but prefers Firebase ID tokens.
+    Strictly enforces Firebase ID tokens as the primary method, with JWT fallback.
     """
     token = credentials.credentials
     db = get_db()
     
     if db is None:
+        logger.error("[Auth] Database connection failed during authentication")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database unavailable"
         )
 
-    # 1. Try Firebase Token Verification
+    # 1. Primary: Firebase Token Verification
     from app.core.firebase import verify_firebase_token
     firebase_user = verify_firebase_token(token)
     
     if firebase_user:
         email = firebase_user.get("email")
+        uid = firebase_user.get("uid")
+        
         if not email:
+            logger.warning(f"[Auth] Firebase token (UID: {uid}) missing email")
             raise HTTPException(status_code=401, detail="Firebase token missing email")
             
         # Find user in our DB by email
         user_doc = db.users.find_one({"email": email})
+        
         if not user_doc:
             # Auto-provision user if they exist in Firebase but not in our DB
-            logger.info(f"[Auth] Auto-provisioning user for Firebase email: {email}")
+            logger.info(f"[Auth] Auto-provisioning user record for: {email}")
+            import re
+            raw_username = email.split("@")[0]
+            safe_username = re.sub(r"[^a-zA-Z0-9_.-]", "_", raw_username) or "user"
             user_doc = {
-                "username": email.split("@")[0],
+                "username": safe_username,
                 "email": email,
-                "firebase_uid": firebase_user.get("uid"),
+                "firebase_uid": uid,
                 "active": True,
-                "created_at": datetime.utcnow()
+                "created_at": datetime.utcnow(),
+                "settings": {
+                    "email_notifications": True,
+                    "slack_notifications": False
+                }
             }
             res = db.users.insert_one(user_doc)
             user_doc["_id"] = res.inserted_id
+            logger.info(f"[Auth] Created local user ID: {user_doc['_id']} for {email}")
 
-        return User(
-            id=str(user_doc["_id"]),
-            username=user_doc["username"],
-            email=user_doc["email"],
-            active=user_doc.get("active", True)
-        )
-
-    # 2. Fallback to Local JWT
-    try:
-        token_data = decode_access_token(token)
-        user_doc = db.users.find_one({"_id": ObjectId(token_data.user_id)})
-        
-        if not user_doc:
-            raise HTTPException(status_code=401, detail="User not found")
-            
         if not user_doc.get("active", True):
+            logger.warning(f"[Auth] Attempt to log in from inactive user: {email}")
             raise HTTPException(status_code=403, detail="User account is inactive")
             
         return User(
@@ -210,11 +216,34 @@ async def get_current_user(
             email=user_doc["email"],
             active=user_doc.get("active", True)
         )
+
+    # 2. Fallback: Local JWT (for backwards compatibility)
+    try:
+        logger.debug("[Auth] Firebase verification failed/skipped, trying local JWT fallback")
+        token_data = decode_access_token(token)
+        user_doc = db.users.find_one({"_id": ObjectId(token_data.user_id)})
+        
+        if not user_doc:
+            logger.warning(f"[Auth] JWT user not found in DB: {token_data.user_id}")
+            raise HTTPException(status_code=401, detail="User not found")
+            
+        if not user_doc.get("active", True):
+            logger.warning(f"[Auth] JWT fallback: User account inactive for {token_data.user_id}")
+            raise HTTPException(status_code=403, detail="User account is inactive")
+            
+        return User(
+            id=str(user_doc["_id"]),
+            username=user_doc["username"],
+            email=user_doc["email"],
+            active=user_doc.get("active", True)
+        )
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"[Auth] JWT fallback failed: {e}")
+        logger.error(f"[Auth] Authentication fully failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
+            detail="Invalid or expired authentication token",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -232,4 +261,6 @@ async def get_current_user_optional(
     try:
         return await get_current_user(credentials)
     except HTTPException:
-        return None
+        # Credentials were provided but invalid — propagate so the caller
+        # cannot fall through to an alternative auth method (e.g. API key).
+        raise

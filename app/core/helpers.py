@@ -8,6 +8,8 @@ def parse_json(text: str) -> dict:
     """
     Parse JSON from text, even if embedded in other text
     """
+    if not text:
+        return {}
     try:
         s, e = text.find("{"), text.rfind("}") + 1
         return json.loads(text[s:e]) if s != -1 and e > s else {}

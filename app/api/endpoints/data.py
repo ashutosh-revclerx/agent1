@@ -84,7 +84,7 @@ def get_stats(user: User = Depends(get_current_user)):
 @router.get("/grafana-url")
 def get_grafana_url(
     instance: str = Query(..., description="Server instance (e.g., 192.168.1.4:9182)"),
-    user: User = Depends(get_current_user)
+    _user: User = Depends(get_current_user)
 ):
     """
     Generate Grafana dashboard URL for a specific instance
@@ -96,11 +96,12 @@ def get_grafana_url(
     # Dashboard UID from the JSON file
     dashboard_uid = "server-monitoring"
     
-    # Build URL with parameters
+    from urllib.parse import quote
+    # Build URL with parameters — URL-encode instance to prevent injection
     grafana_url = (
         f"{grafana_base}/d/{dashboard_uid}/server-monitoring"
         f"?orgId=1"
-        f"&var-instance={instance}"
+        f"&var-instance={quote(instance, safe='')}"
         f"&from=now-30m"
         f"&to=now"
         f"&refresh=30s"
@@ -242,7 +243,11 @@ def get_rca(
 
     # 2. Fetch Langfuse RCAs (filtered by watched users)
     langfuse_docs = []
-    if "langfuse_rca" in db.list_collection_names():
+    try:
+        _lf_collections = db.list_collection_names()
+    except Exception:
+        _lf_collections = []
+    if "langfuse_rca" in _lf_collections:
         watching_docs = list(db.langfuse_watched_users.find({"added_by": user.id}))
         watched_ids = [doc["langfuse_user_id"] for doc in watching_docs]
         

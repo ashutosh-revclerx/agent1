@@ -25,6 +25,8 @@ def initialize_firebase():
             firebase_admin.initialize_app(cred)
             logger.info(f"[Firebase] Initialized with service account from {key_path}")
         else:
+            if key_path and not os.path.exists(key_path):
+                logger.warning(f"[Firebase] Service account file not found: {key_path!r} — falling back to default credentials")
             # Fallback to default credentials (useful for GCP environments)
             firebase_admin.initialize_app()
             logger.info("[Firebase] Initialized with default credentials")

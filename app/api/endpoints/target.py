@@ -4,6 +4,7 @@ Add/Remove Prometheus scrape targets dynamically.
 """
 import json
 import os
+from pathlib import Path
 from typing import List
 from urllib.parse import quote
 
@@ -17,7 +18,7 @@ from app.services.monitoring_service import monitor_manager
 
 router = APIRouter()
 
-TARGETS_FILE = "targets.json"
+TARGETS_FILE = str(Path(__file__).parents[3] / "targets.json")
 
 
 def _regenerate_targets_file(db):

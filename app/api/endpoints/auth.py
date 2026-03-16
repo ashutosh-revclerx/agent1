@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import List
 from fastapi import APIRouter, HTTPException, Depends, status, Request
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 
 from app.schemas.user import (
     UserRegister, UserLogin, Token, UserResponse, User,
@@ -76,9 +77,15 @@ async def register(request: Request, user_data: UserRegister):
         }
     }
     
-    result = db.users.insert_one(user_doc)
+    try:
+        result = db.users.insert_one(user_doc)
+    except DuplicateKeyError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username or email already registered"
+        )
     user_id = str(result.inserted_id)
-    
+
     logger.info(f"[Auth] New user registered: {user_data.username} (ID: {user_id})")
     
     # Create session
