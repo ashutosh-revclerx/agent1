@@ -42,8 +42,9 @@ def add_watched_user(body: WatchedUserIn, current_user=Depends(get_current_user)
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
+    # Scope uniqueness to THIS user only — other logins can watch the same langfuse_user_id
     existing = db.langfuse_watched_users.find_one(
-        {"langfuse_user_id": body.langfuse_user_id}
+        {"langfuse_user_id": body.langfuse_user_id, "added_by": current_user.id}
     )
     if existing:
         raise HTTPException(status_code=400, detail="User already being watched")

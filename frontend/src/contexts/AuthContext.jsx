@@ -1,67 +1,110 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import { api } from '../services/api';
+import { auth } from '../firebase';
+import { 
+  onAuthStateChanged, 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut,
+  getIdToken,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult
+} from 'firebase/auth';
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(localStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check if we have a token and validate it
-    if (token) {
-      fetchCurrentUser();
-    } else {
+    // Check for redirect result on mount
+    const checkRedirect = async () => {
+      try {
+        const result = await getRedirectResult(auth);
+        if (result) {
+          console.log('Google redirect sign-in successful');
+        }
+      } catch (error) {
+        console.error('Google redirect sign-in error:', error);
+      }
+    };
+    checkRedirect();
+
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          // Get ID token and store it for API calls
+          const token = await getIdToken(firebaseUser);
+          localStorage.setItem('token', token);
+          
+          // Fetch additional user data from our backend
+          const userData = await api.getCurrentUser();
+          setUser({ ...firebaseUser, ...userData });
+        } catch (error) {
+          console.error('Failed to sync user with backend:', error);
+          // Even if backend fails, we have the firebase user
+          setUser(firebaseUser);
+        }
+      } else {
+        setUser(null);
+        localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
+      }
       setLoading(false);
-    }
-  }, [token]);
+    });
 
-  const fetchCurrentUser = async () => {
-    try {
-      const userData = await api.getCurrentUser();
-      setUser(userData);
-    } catch (error) {
-      console.error('Failed to fetch user:', error);
-      logout();
-    } finally {
-      setLoading(false);
-    }
-  };
+    return () => unsubscribe();
+  }, []);
 
-  const login = async (username, password) => {
-    const data = await api.login(username, password);
-    setToken(data.access_token);
-    
-    // Fetch user data
-    const userData = await api.getCurrentUser();
-    setUser(userData);
-
-    return data;
+  const login = async (email, password) => {
+    return signInWithEmailAndPassword(auth, email, password);
   };
 
   const register = async (username, email, password) => {
-    const data = await api.register(username, email, password);
-    setToken(data.access_token);
+    // 1. Create user in Firebase
+    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
     
-    // Fetch user data
-    const userData = await api.getCurrentUser();
-    setUser(userData);
+    // 2. Register in our backend to create the user document in MongoDB
+    try {
+      const token = await getIdToken(userCredential.user);
+      localStorage.setItem('token', token);
+      await api.register(username, email, password);
+    } catch (error) {
+      console.error('Backend registration failed:', error);
+    }
+    
+    return userCredential;
+  };
 
-    return data;
+  const loginWithGoogle = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      return await signInWithPopup(auth, provider);
+    } catch (error) {
+      if (error.code === 'auth/popup-blocked') {
+        return signInWithRedirect(auth, provider);
+      }
+      throw error;
+    }
+  };
+
+  const loginWithGoogleRedirect = async () => {
+    const provider = new GoogleAuthProvider();
+    return signInWithRedirect(auth, provider);
   };
 
   const logout = async () => {
-    await api.logout();
-    setToken(null);
-    setUser(null);
+    return signOut(auth);
   };
 
   const value = {
     user,
-    token,
     loading,
     login,
+    loginWithGoogle,
     register,
     logout,
     isAuthenticated: !!user

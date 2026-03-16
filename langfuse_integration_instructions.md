@@ -369,9 +369,9 @@ collections. Add these lines right after the existing `db.alert_windows.create_i
 Make sure your `.env` has the correct values:
 
 ```env
-LANGFUSE_PUBLIC_KEY=pk-lf-0c4b07e2-1051-4f6c-8446-03f7025ed1c2
-LANGFUSE_SECRET_KEY=sk-lf-5cf98734-4e63-483e-ad38-a1c273545afa
-LANGFUSE_HOST=https://langfuse.nervesparks.com
+LANGFUSE_PUBLIC_KEY=pk-lf-your-public-key-here
+LANGFUSE_SECRET_KEY=sk-lf-your-secret-key-here
+LANGFUSE_HOST=https://cloud.langfuse.com
 ```
 
 ---

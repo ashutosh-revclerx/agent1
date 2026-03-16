@@ -13,6 +13,7 @@ from app.schemas.user import User
 from app.core.auth import get_current_user
 from app.services.mongodb_service import get_db
 from app.core.logging import logger
+from app.services.monitoring_service import monitor_manager
 
 router = APIRouter()
 
@@ -84,7 +85,7 @@ def get_targets(user: User = Depends(get_current_user)):
 
 
 @router.post("/agent/targets")
-def add_target(target: Target, user: User = Depends(get_current_user)):
+async def add_target(target: Target, user: User = Depends(get_current_user)):
     """Add a new monitoring target for current user."""
     db = get_db()
     if db is None:
@@ -98,13 +99,14 @@ def add_target(target: Target, user: User = Depends(get_current_user)):
 
     db.targets.insert_one(target_doc)
     _regenerate_targets_file(db)
+    await monitor_manager.refresh_monitors()
 
     logger.info(f"[Targets] User {user.username} added target: {target.endpoint}")
     return {"message": "Target added and monitoring updated"}
 
 
 @router.delete("/agent/targets/{endpoint:path}")
-def remove_target(endpoint: str, user: User = Depends(get_current_user)):
+async def remove_target(endpoint: str, user: User = Depends(get_current_user)):
     """Remove a target for current user."""
     db = get_db()
     if db is None:
@@ -117,6 +119,7 @@ def remove_target(endpoint: str, user: User = Depends(get_current_user)):
         )
 
     _regenerate_targets_file(db)
+    await monitor_manager.refresh_monitors()
 
     logger.info(f"[Targets] User {user.username} removed target: {endpoint}")
     return {"message": "Target removed"}

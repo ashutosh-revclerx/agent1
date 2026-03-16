@@ -151,45 +151,72 @@ async def get_current_user(
 ) -> User:
     """
     Dependency to get current authenticated user.
-    Use this in route dependencies: user: User = Depends(get_current_user)
+    Maintains compatibility with local JWTs but prefers Firebase ID tokens.
     """
     token = credentials.credentials
-    token_data = decode_access_token(token)
-    
     db = get_db()
+    
     if db is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database unavailable"
         )
+
+    # 1. Try Firebase Token Verification
+    from app.core.firebase import verify_firebase_token
+    firebase_user = verify_firebase_token(token)
     
+    if firebase_user:
+        email = firebase_user.get("email")
+        if not email:
+            raise HTTPException(status_code=401, detail="Firebase token missing email")
+            
+        # Find user in our DB by email
+        user_doc = db.users.find_one({"email": email})
+        if not user_doc:
+            # Auto-provision user if they exist in Firebase but not in our DB
+            logger.info(f"[Auth] Auto-provisioning user for Firebase email: {email}")
+            user_doc = {
+                "username": email.split("@")[0],
+                "email": email,
+                "firebase_uid": firebase_user.get("uid"),
+                "active": True,
+                "created_at": datetime.utcnow()
+            }
+            res = db.users.insert_one(user_doc)
+            user_doc["_id"] = res.inserted_id
+
+        return User(
+            id=str(user_doc["_id"]),
+            username=user_doc["username"],
+            email=user_doc["email"],
+            active=user_doc.get("active", True)
+        )
+
+    # 2. Fallback to Local JWT
     try:
+        token_data = decode_access_token(token)
         user_doc = db.users.find_one({"_id": ObjectId(token_data.user_id)})
+        
+        if not user_doc:
+            raise HTTPException(status_code=401, detail="User not found")
+            
+        if not user_doc.get("active", True):
+            raise HTTPException(status_code=403, detail="User account is inactive")
+            
+        return User(
+            id=str(user_doc["_id"]),
+            username=user_doc["username"],
+            email=user_doc["email"],
+            active=user_doc.get("active", True)
+        )
     except Exception as e:
-        logger.error(f"[Auth] Error fetching user: {e}")
+        logger.error(f"[Auth] JWT fallback failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid user ID"
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    if not user_doc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
-        )
-    
-    if not user_doc.get("active", True):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive"
-        )
-    
-    return User(
-        id=str(user_doc["_id"]),
-        username=user_doc["username"],
-        email=user_doc["email"],
-        active=user_doc.get("active", True)
-    )
 
 
 async def get_current_user_optional(

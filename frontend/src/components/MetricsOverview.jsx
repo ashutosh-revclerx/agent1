@@ -84,9 +84,28 @@ function MetricsBatchCard({ batch }) {
     return formatDateTime(timestamp);
   };
 
+  // Derive a meaningful title: prefer instance from first metric, fall back to window times
+  const firstMetricInstance = batch.metrics?.[0]?.instance;
+  const metricsCount = batch.metrics?.length || batch.metrics_count || 0;
+
+  // Build a readable title
+  const title = firstMetricInstance
+    ? firstMetricInstance
+    : batch.window_start
+    ? `Batch ${formatTime(batch.window_start)}`
+    : "Batch Analysis";
+
+  const subtitle = batch.window_start && batch.window_end
+    ? `${formatTime(batch.window_start)} → ${formatTime(batch.window_end)} • ${metricsCount} metrics`
+    : `${formatTime(batch.collected_at)} • ${metricsCount} metrics`;
+
   const handleViewGrafana = async (e) => {
     e.stopPropagation();
-    const instance = batch.instance || `${batch.ip}:${batch.port}`;
+    const instance = firstMetricInstance || batch.instance;
+    if (!instance) {
+      alert('No instance information available for this batch');
+      return;
+    }
     try {
       const { grafana_url } = await api.getGrafanaUrl(instance);
       window.open(grafana_url, '_blank');
@@ -104,21 +123,18 @@ function MetricsBatchCard({ batch }) {
       >
         <div className="flex items-center justify-between">
           <div>
-            <p className="font-semibold text-gray-900">
-              {batch.instance || `${batch.ip}:${batch.port}` || "Unknown"}
-            </p>
-            <p className="text-xs text-gray-500 mt-1">
-              {formatTime(batch.collected_at)} • {batch.metrics_count || 0}{" "}
-              metrics
-            </p>
+            <p className="font-semibold text-gray-900">{title}</p>
+            <p className="text-xs text-gray-500 mt-1">{subtitle}</p>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={handleViewGrafana}
-              className="px-3 py-1.5 bg-blue-600 text-white text-xs font-semibold rounded hover:bg-blue-700 transition-colors"
-            >
-              📊 Grafana
-            </button>
+            {firstMetricInstance && (
+              <button
+                onClick={handleViewGrafana}
+                className="px-3 py-1.5 bg-blue-600 text-white text-xs font-semibold rounded hover:bg-blue-700 transition-colors"
+              >
+                📊 Grafana
+              </button>
+            )}
             <span className="text-sm text-blue-600">
               {expanded ? "▼" : "▶"}
             </span>
@@ -149,14 +165,14 @@ function MetricsBatchCard({ batch }) {
                     key={idx}
                     className={idx % 2 === 0 ? "bg-white" : "bg-blue-50/50"}
                   >
-                    <td className="p-2 text-gray-900">{metric.name}</td>
+                    <td className="p-2 text-gray-900">{metric.name || "—"}</td>
                     <td className="p-2 text-gray-700">
                       {typeof metric.value === "number"
-                        ? metric.value.toFixed(2)
-                        : metric.value}
+                        ? metric.value.toFixed(4)
+                        : metric.value ?? "—"}
                     </td>
                     <td className="p-2 text-gray-600 text-xs">
-                      {metric.instance}
+                      {metric.instance || "—"}
                     </td>
                   </tr>
                 ))}

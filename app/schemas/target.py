@@ -114,10 +114,12 @@ class Target(BaseModel):
         try:
             # Strip IPv6 brackets if present: [::1]
             bare = host.strip("[]")
-            if _is_ip_blocked(bare):
+            from app.core.config import ALLOW_PRIVATE_TARGETS
+            if _is_ip_blocked(bare) and not ALLOW_PRIVATE_TARGETS:
                 raise ValueError(
                     f"Endpoint {host!r} resolves to a private/internal address "
-                    "and cannot be used as a scrape target"
+                    "and cannot be used as a scrape target. "
+                    "If you are monitoring internal services, enable ALLOW_PRIVATE_TARGETS in backend settings."
                 )
         except ValueError as e:
             # Re-raise our own ValueError; ignore ipaddress parse errors

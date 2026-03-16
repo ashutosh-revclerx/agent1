@@ -52,3 +52,6 @@ SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "").strip()
 LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "").strip()
 LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "").strip()
 LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").strip()
+
+# Security / SSRF
+ALLOW_PRIVATE_TARGETS = os.getenv("ALLOW_PRIVATE_TARGETS", "true").lower() in ("true", "1", "yes")

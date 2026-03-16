@@ -34,10 +34,11 @@ export default function LangfuseMonitor() {
     if (isAutoRefresh) {
       interval = setInterval(() => {
         fetchData(false);
-      }, 120000); // 2 minutes
+      }, 30000); // 30 seconds
     }
     return () => clearInterval(interval);
   }, [hours, selectedUser, isAutoRefresh]);
+
 
   const fetchWatchedUsers = async () => {
     try {
@@ -74,12 +75,15 @@ export default function LangfuseMonitor() {
       setNewUserId("");
       setNewUserLabel("");
       await fetchWatchedUsers();
+      // Immediately fetch data so new traces appear right away
+      await fetchData(false);
     } catch (err) {
       alert(err.message || "Failed to add user");
     } finally {
       setAdding(false);
     }
   };
+
 
   const removeWatchedUser = async (userId) => {
     if (!confirm(`Stop watching "${userId}"?`)) return;
