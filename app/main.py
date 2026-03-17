@@ -5,6 +5,7 @@ import uvicorn
 from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime, timedelta
+from pymongo import UpdateOne
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,6 +45,40 @@ initialize_firebase()
 
 
 from app.services.monitoring_service import monitor_manager
+
+
+def _migrate_alert_windows_for_tenant_scoping(db) -> None:
+    coll = db.alert_windows
+    legacy_filters = {
+        "$or": [
+            {"user_id": {"$exists": False}},
+            {"user_id": None},
+            {"user_id": ""},
+        ]
+    }
+    legacy_docs = list(coll.find(legacy_filters, {"_id": 1}))
+    if legacy_docs:
+        coll.bulk_write(
+            [
+                UpdateOne(
+                    {"_id": doc["_id"]},
+                    {"$set": {"user_id": f"__legacy__:{doc['_id']}"}},
+                )
+                for doc in legacy_docs
+            ]
+        )
+        logger.warning(
+            f"[Database] Migrated {len(legacy_docs)} legacy alert_windows "
+            "documents to synthetic tenant ids"
+        )
+
+    for index in coll.list_indexes():
+        key = list(index.get("key", {}).items())
+        if key == [("window_start_ist_str", 1), ("window_end_ist_str", 1)] and index.get("unique"):
+            coll.drop_index(index["name"])
+            logger.warning(
+                f"[Database] Dropped legacy global alert_windows index: {index['name']}"
+            )
 
 
 @asynccontextmanager
@@ -97,22 +132,12 @@ async def lifespan(app: FastAPI):
             
             db.targets.create_index([("user_id", 1), ("endpoint", 1)])
             
-            db.alert_windows.create_index([("user_id", 1), ("window_start_ist_str", 1), ("window_end_ist_str", 1)], unique=True)
+            _migrate_alert_windows_for_tenant_scoping(db)
+            db.alert_windows.create_index(
+                [("user_id", 1), ("window_start_ist_str", 1), ("window_end_ist_str", 1)],
+                unique=True,
+            )
             db.alert_windows.create_index([("user_id", 1), ("window_start_ist_str", 1)])
-
-            # Migrate legacy alert_windows documents that pre-date per-tenant scoping.
-            # Documents without user_id would violate the unique index if two tenants
-            # process the same window string — tag them so they don't collide.
-            legacy_count = db.alert_windows.count_documents({"user_id": {"$exists": False}})
-            if legacy_count:
-                db.alert_windows.update_many(
-                    {"user_id": {"$exists": False}},
-                    {"$set": {"user_id": "__legacy__"}},
-                )
-                logger.warning(
-                    f"[Database] Migrated {legacy_count} legacy alert_windows "
-                    "documents to user_id='__legacy__'"
-                )
 
             # Langfuse ingestion indexes
             db.langfuse_traces.create_index("trace_id", unique=True)

@@ -4,6 +4,7 @@ import json
 from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime, timedelta, timezone
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from app.core.config import BATCH_INTERVAL_MINUTES, PROM_URL
 from app.core.logging import logger
@@ -52,6 +53,31 @@ class BatchMonitor:
             session_id = f"{session_id}_user_{self.user_id}"
         return session_id
 
+    def _window_filter(self, start: datetime, end: datetime) -> Dict[str, Any]:
+        return {
+            "user_id": self.user_id,
+            "window_start_ist_str": format_ist(start, include_tz=True),
+            "window_end_ist_str": format_ist(end, include_tz=True),
+        }
+
+    def _run_with_optional_transaction(self, db, callback):
+        client = getattr(db, "client", None)
+        if client is None or not hasattr(client, "start_session"):
+            return callback(None)
+
+        try:
+            with client.start_session() as session:
+                with session.start_transaction():
+                    return callback(session)
+        except (NotImplementedError, AttributeError):
+            return callback(None)
+        except OperationFailure as exc:
+            msg = str(exc).lower()
+            if "transaction numbers are only allowed" in msg or "replica set" in msg:
+                logger.warning("[Batch] MongoDB transactions unavailable, using non-transactional fallback")
+                return callback(None)
+            raise
+
     def claim_window(self, db, start: datetime, end: datetime) -> bool:
         if db is None: return False
         if not self.user_id:
@@ -59,11 +85,9 @@ class BatchMonitor:
             return False
 
         placeholder = {
-            "user_id": self.user_id,
+            **self._window_filter(start, end),
             "window_start_ist": start,
             "window_end_ist": end,
-            "window_start_ist_str": format_ist(start, include_tz=True),
-            "window_end_ist_str": format_ist(end, include_tz=True),
             "status": "processing",
             "claimed_at_ist": now_ist(),
             "timezone": "IST",
@@ -71,27 +95,24 @@ class BatchMonitor:
         try:
             db.alert_windows.insert_one(placeholder)
             return True
+        except DuplicateKeyError:
+            return False
         except Exception as e:
-            if "duplicate" in str(e).lower() or "E11000" in str(e):
-                return False
             logger.error(f"[Batch] Unexpected error claiming window: {e}", exc_info=True)
             return False
 
-    def mark_processed(self, db, start: datetime, end: datetime, session_id: str, incident_id: Any):
-        if db is None or not self.user_id: return
+    def mark_failed(self, db, start: datetime, end: datetime, error: str):
+        if db is None or not self.user_id:
+            return
+        failed_at = now_ist()
         db.alert_windows.update_one(
-            {
-                "user_id": self.user_id,
-                "window_start_ist_str": format_ist(start, include_tz=True),
-                "window_end_ist_str": format_ist(end, include_tz=True),
-            },
+            self._window_filter(start, end),
             {
                 "$set": {
-                    "status": "processed",
-                    "processed_at_ist": now_ist(),
-                    "processed_at_ist_str": format_ist(now_ist(), include_tz=True),
-                    "langfuse_session_id": session_id,
-                    "incident_id": incident_id,
+                    "status": "failed",
+                    "failed_at_ist": failed_at,
+                    "failed_at_ist_str": format_ist(failed_at, include_tz=True),
+                    "error": error[:500],
                 }
             },
             upsert=False,
@@ -161,51 +182,73 @@ RETURN ONLY JSON:"""
         anomalies = analysis.get("anomalies", []) or []
 
         try:
-            batch_doc = {
-                "window_start_ist": start, "window_end_ist": end,
-                "window_start_ist_str": format_ist(start, include_tz=True),
-                "window_end_ist_str": format_ist(end, include_tz=True),
-                "collected_at_ist": created_ist, "user_id": self.user_id,
-                "langfuse_session_id": session_id,
-                "metrics": metrics, "analysis": analysis,
-            }
-            res_batch = db.metrics_batches.insert_one(batch_doc)
-            batch_id = res_batch.inserted_id
-
-            inc_doc = {
-                "batch_id": batch_id, "user_id": self.user_id,
-                "created_at_ist": created_ist, "ip": ip, "port": port,
-                "langfuse_session_id": session_id,
-                "window_start_ist_str": format_ist(start, include_tz=True),
-                "window_end_ist_str": format_ist(end, include_tz=True),
-                **inc,
-            }
-            res_inc = db.incidents.insert_one(inc_doc)
-            incident_id = res_inc.inserted_id
-
-            for idx, a in enumerate(anomalies):
-                a_doc = {
-                    "batch_id": batch_id, "incident_id": incident_id,
-                    "user_id": self.user_id, "created_at_ist": created_ist,
-                    "ip": ip, "port": port,
+            def _write(session):
+                write_kwargs = {"session": session} if session is not None else {}
+                batch_doc = {
+                    "window_start_ist": start, "window_end_ist": end,
+                    "window_start_ist_str": format_ist(start, include_tz=True),
+                    "window_end_ist_str": format_ist(end, include_tz=True),
+                    "collected_at_ist": created_ist, "user_id": self.user_id,
                     "langfuse_session_id": session_id,
-                    **a,
+                    "metrics": metrics, "analysis": analysis,
                 }
-                db.anomalies.insert_one(a_doc)
+                res_batch = db.metrics_batches.insert_one(batch_doc, **write_kwargs)
+                batch_id = res_batch.inserted_id
 
-            rca_doc = {
-                "user_id": self.user_id, "created_at_ist": created_ist,
-                "window_start_ist": start, "window_end_ist": end,
-                "batch_id": batch_id, "incident_id": incident_id,
-                "instance": primary_instance, "ip": ip, "port": port,
-                "summary": inc.get("summary"), "cause": inc.get("root_cause"),
-                "fix": inc.get("fix_plan", {}).get("immediate", []),
-                "langfuse_session_id": session_id, "raw": analysis
-            }
-            db.rca.insert_one(rca_doc)
-            return batch_id, incident_id
+                inc_doc = {
+                    "batch_id": batch_id, "user_id": self.user_id,
+                    "created_at_ist": created_ist, "ip": ip, "port": port,
+                    "langfuse_session_id": session_id,
+                    "window_start_ist_str": format_ist(start, include_tz=True),
+                    "window_end_ist_str": format_ist(end, include_tz=True),
+                    **inc,
+                }
+                res_inc = db.incidents.insert_one(inc_doc, **write_kwargs)
+                incident_id = res_inc.inserted_id
+
+                for a in anomalies:
+                    a_doc = {
+                        "batch_id": batch_id, "incident_id": incident_id,
+                        "user_id": self.user_id, "created_at_ist": created_ist,
+                        "ip": ip, "port": port,
+                        "langfuse_session_id": session_id,
+                        **a,
+                    }
+                    db.anomalies.insert_one(a_doc, **write_kwargs)
+
+                rca_doc = {
+                    "user_id": self.user_id, "created_at_ist": created_ist,
+                    "window_start_ist": start, "window_end_ist": end,
+                    "batch_id": batch_id, "incident_id": incident_id,
+                    "instance": primary_instance, "ip": ip, "port": port,
+                    "summary": inc.get("summary"), "cause": inc.get("root_cause"),
+                    "fix": inc.get("fix_plan", {}).get("immediate", []),
+                    "langfuse_session_id": session_id, "raw": analysis
+                }
+                db.rca.insert_one(rca_doc, **write_kwargs)
+
+                processed_at = now_ist()
+                db.alert_windows.update_one(
+                    self._window_filter(start, end),
+                    {
+                        "$set": {
+                            "status": "processed",
+                            "processed_at_ist": processed_at,
+                            "processed_at_ist_str": format_ist(processed_at, include_tz=True),
+                            "langfuse_session_id": session_id,
+                            "batch_id": batch_id,
+                            "incident_id": incident_id,
+                        }
+                    },
+                    upsert=False,
+                    **write_kwargs,
+                )
+                return batch_id, incident_id
+
+            return self._run_with_optional_transaction(db, _write)
         except Exception as e:
             logger.error(f"[Batch] Storage error: {e}", exc_info=True)
+            self.mark_failed(db, start, end, str(e))
             return None, None
 
     def send_alerts(self, incident: Dict, anomalies: List, start: datetime, end: datetime, session_id: str):
@@ -318,8 +361,9 @@ RETURN ONLY JSON:"""
             if not analysis: return
             
             _, incident_id = self.store_results(db, start, end, session_id, metrics, analysis)
+            if incident_id is None:
+                return
             self.send_alerts(analysis.get("incident", {}), analysis.get("anomalies", []), start, end, session_id)
-            self.mark_processed(db, start, end, session_id, incident_id)
             logger.info(f"[Batch] ✅ Window complete for user {self.user_id}")
         finally:
             if span_ctx:

@@ -35,7 +35,7 @@ LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY", "").strip()
 LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com").strip().rstrip("/")
 
 # Use a dedicated test user so real data is not polluted
-USER_ID = "anon"
+USER_ID = "anon2"
 
 MODELS = ["gemini-2.0-flash", "gpt-4-turbo", "claude-3-opus", "gemma3:1b"]
 
