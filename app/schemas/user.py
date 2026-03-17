@@ -51,6 +51,7 @@ class TokenData(BaseModel):
     """Token payload data"""
     user_id: Optional[str] = None
     username: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class User(BaseModel):
@@ -59,6 +60,7 @@ class User(BaseModel):
     username: str
     email: str
     active: bool = True
+    session_id: Optional[str] = None
 
 
 class SessionResponse(BaseModel):

@@ -95,7 +95,7 @@ async def register(request: Request, user_data: UserRegister):
     
     # Create tokens
     access_token = create_access_token(
-        data={"user_id": user_id, "username": user_data.username}
+        data={"user_id": user_id, "username": user_data.username, "session_id": session_id}
     )
     refresh_token = create_refresh_token(user_id, session_id)
     
@@ -148,7 +148,7 @@ async def login(request: Request, credentials: UserLogin):
     
     # Create tokens
     access_token = create_access_token(
-        data={"user_id": user_id, "username": credentials.username}
+        data={"user_id": user_id, "username": credentials.username, "session_id": session_id}
     )
     refresh_token = create_refresh_token(user_id, session_id)
     
@@ -208,7 +208,7 @@ async def refresh_token(token_request: RefreshTokenRequest):
     
     # Create new access token
     access_token = create_access_token(
-        data={"user_id": user_id, "username": user_doc["username"]}
+        data={"user_id": user_id, "username": user_doc["username"], "session_id": session_id}
     )
     
     logger.info(f"[Auth] Token refreshed for user {user_id}")
@@ -240,22 +240,15 @@ async def logout(token_request: RefreshTokenRequest, user: User = Depends(get_cu
 
 
 @router.get("/auth/sessions", response_model=List[SessionResponse])
-async def get_sessions(request: Request, user: User = Depends(get_current_user)):
+async def get_sessions(_request: Request, user: User = Depends(get_current_user)):
     """
     Get all active sessions for the current user
     """
     sessions = get_user_sessions(user.id)
     
-    # Get current session info to mark it
-    current_ip = request.client.host if request.client else "unknown"
-    current_ua = request.headers.get("user-agent", "unknown")
-    
     response_sessions = []
     for session in sessions:
-        is_current = (
-            session["ip_address"] == current_ip and 
-            session["user_agent"] == current_ua
-        )
+        is_current = session["session_id"] == user.session_id
         
         response_sessions.append(SessionResponse(
             session_id=session["session_id"],
@@ -288,25 +281,14 @@ async def revoke_session_endpoint(session_id: str, user: User = Depends(get_curr
 
 @router.post("/auth/sessions/revoke-all")
 async def revoke_all_sessions_endpoint(
-    request: Request,
+    _request: Request,
     keep_current: bool = True,
     user: User = Depends(get_current_user)
 ):
     """
     Revoke all sessions except optionally the current one
     """
-    current_session_id = None
-    
-    if keep_current:
-        # Try to find current session
-        current_ip = request.client.host if request.client else "unknown"
-        current_ua = request.headers.get("user-agent", "unknown")
-        sessions = get_user_sessions(user.id)
-        
-        for session in sessions:
-            if session["ip_address"] == current_ip and session["user_agent"] == current_ua:
-                current_session_id = session["session_id"]
-                break
+    current_session_id = user.session_id if keep_current else None
     
     count = revoke_all_sessions(user.id, except_session_id=current_session_id)
     

@@ -16,6 +16,7 @@ from bson import ObjectId
 from app.services.mongodb_service import get_db
 from app.schemas.user import User, TokenData
 from app.core.logging import logger
+from app.core.session import validate_session
 
 # Password hashing with Argon2 (Production-grade settings)
 ph = PasswordHasher(
@@ -129,15 +130,16 @@ def decode_access_token(token: str) -> TokenData:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("user_id")
         username: str = payload.get("username")
+        session_id: str = payload.get("session_id")
         
-        if user_id is None:
+        if user_id is None or session_id is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid authentication credentials",
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
-        return TokenData(user_id=user_id, username=username)
+        return TokenData(user_id=user_id, username=username, session_id=session_id)
     
     except jwt.ExpiredSignatureError:
         raise HTTPException(
@@ -214,7 +216,8 @@ async def get_current_user(
             id=str(user_doc["_id"]),
             username=user_doc["username"],
             email=user_doc["email"],
-            active=user_doc.get("active", True)
+            active=user_doc.get("active", True),
+            session_id=None,
         )
 
     # 2. Fallback: Local JWT (for backwards compatibility)
@@ -230,12 +233,20 @@ async def get_current_user(
         if not user_doc.get("active", True):
             logger.warning(f"[Auth] JWT fallback: User account inactive for {token_data.user_id}")
             raise HTTPException(status_code=403, detail="User account is inactive")
+
+        if not validate_session(token_data.session_id, token_data.user_id):
+            logger.warning(
+                f"[Auth] JWT fallback: revoked/inactive session {token_data.session_id} "
+                f"for user {token_data.user_id}"
+            )
+            raise HTTPException(status_code=401, detail="Session has been revoked")
             
         return User(
             id=str(user_doc["_id"]),
             username=user_doc["username"],
             email=user_doc["email"],
-            active=user_doc.get("active", True)
+            active=user_doc.get("active", True),
+            session_id=token_data.session_id,
         )
     except HTTPException:
         raise
