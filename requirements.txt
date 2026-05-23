@@ -6,9 +6,8 @@ fastapi>=0.100.0
 uvicorn>=0.23.0
 prometheus-fastapi-instrumentator>=7.0.0
 httpx>=0.24.0
-langfuse>=2.0.0,<4.0.0
-google-generativeai
-openai>=1.0.0
+langfuse
+google-genai
 PyJWT
 argon2-cffi
 email-validator

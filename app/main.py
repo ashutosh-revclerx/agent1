@@ -72,12 +72,122 @@ def _migrate_alert_windows_for_tenant_scoping(db) -> None:
             "documents to synthetic tenant ids"
         )
 
-    for index in coll.list_indexes():
-        key = list(index.get("key", {}).items())
-        if key == [("window_start_ist_str", 1), ("window_end_ist_str", 1)] and index.get("unique"):
-            coll.drop_index(index["name"])
-            logger.warning(
-                f"[Database] Dropped legacy global alert_windows index: {index['name']}"
+            logger.info(f"[Batch] Stored: batch={batch_id}, incident={incident_id}, anomalies={len(anomalies)}")
+
+        except Exception as e:
+            logger.error(f"[Batch] Storage error: {e}", exc_info=True)
+
+        return batch_id, incident_id
+
+    def send_alerts(self, incident: Dict, anomalies: List, start: datetime, end: datetime, session_id: str):
+        """Send Slack and Email alerts with IST times."""
+        sev = incident.get("severity", "low").upper()
+        title = incident.get("title", "Batch Analysis")
+        window = f"{start.strftime('%Y-%m-%d %H:%M')} -> {end.strftime('%H:%M')} IST"
+        immediate = incident.get("fix_plan", {}).get("immediate", [])
+
+        if slack_is_configured():
+            msg = f"""🚨 [{sev}] {title}
+📅 Window: {window}
+📋 {incident.get('summary', '')}
+🔍 Root Cause: {incident.get('root_cause', 'Unknown')}
+💥 Blast Radius: {incident.get('blast_radius', 'Unknown')}
+⚡ Actions: {', '.join(immediate) or 'None'}
+📊 Anomalies: {len(anomalies)}
+🔗 Session: {session_id}"""
+            try:
+                send_slack_alert_text(msg, user_id=self.user_id)
+            except Exception as e:
+                logger.error(f"[Alerts] Slack error: {e}")
+
+        try:
+            html = f"""<h2>🚨 [{sev}] {title}</h2>
+<p><b>Window:</b> {window}</p>
+<p><b>Summary:</b> {incident.get('summary', '')}</p>
+<p><b>Root Cause:</b> {incident.get('root_cause', '')}</p>
+<p><b>Blast Radius:</b> {incident.get('blast_radius', '')}</p>
+<p><b>Immediate Actions:</b></p><ul>{''.join(f'<li>{a}</li>' for a in immediate) or '<li>None</li>'}</ul>
+<p><b>Anomalies:</b> {len(anomalies)} | <b>Confidence:</b> {incident.get('confidence', 0):.0%}</p>"""
+            send_alert(f"[{sev}] {title}", html, user_id=self.user_id)
+        except Exception as e:
+            logger.error(f"[Alerts] Email error: {e}")
+
+    async def run_worker(self):
+        start, end = self.get_window()
+        session_id = self.get_session_id(start)
+        window_str = f"{start.strftime('%H:%M')}->{end.strftime('%H:%M')} IST"
+
+        user_log = f" [User: {self.user_id}]" if self.user_id else ""
+        logger.info(f"[Batch]{user_log} Running: {window_str} | Session: {session_id}")
+
+        db = get_db()
+        if self.is_processed(db, start, end):
+            logger.info(f"[Batch]{user_log} Already processed - skipping")
+            return
+
+        langfuse = get_langfuse_client()
+        span_ctx = prop_ctx = None
+
+        if langfuse and is_langfuse_enabled():
+            try:
+                span_ctx = langfuse.start_as_current_observation(
+                    as_type="span", name="Batch Monitoring",
+                    metadata={
+                        "window_start": start.isoformat(),
+                        "window_end": end.isoformat(),
+                        "timezone": "IST",
+                        "user_id": self.user_id
+                    }
+                )
+                span_ctx.__enter__()
+                if propagate_attributes:
+                    prop_ctx = propagate_attributes(session_id=session_id)
+                    prop_ctx.__enter__()
+            except Exception as e:
+                logger.warning(f"[Langfuse] Span error: {e}")
+
+        try:
+            # Fetch metrics for this specific user only
+            if self.user_id:
+                from app.services.prometheus_service import fetch_metrics_for_user
+                metrics = await fetch_metrics_for_user(self.user_id)
+            else:
+                # Fallback to all metrics if no user_id (backward compatibility)
+                metrics = await fetch_metrics()
+            
+            if not metrics:
+                logger.warning(f"[Batch]{user_log} No metrics - skipping")
+                return
+
+            logger.info(f"[Batch]{user_log} Fetched {len(metrics)} metrics")
+
+            # LLM metadata (Gemini primary, OpenAI/Gemma3 fallback)
+            llm_metadata = {
+                "window_start": start.isoformat(),
+                "window_end": end.isoformat(),
+                "metrics_count": len(metrics),
+                "timezone": "IST",
+                "user_id": self.user_id,
+                "llm_provider": "gemini",
+                "gemini_model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+                "google_api_key_set": bool(os.getenv("GOOGLE_API_KEY", "").strip()),
+            }
+
+            analysis = await self.call_llm(
+                self.build_prompt(metrics, start, end),
+                session_id,
+                llm_metadata
+            )
+
+            if not analysis:
+                logger.error(f"[Batch]{user_log} LLM analysis failed")
+                return
+
+            incident = analysis.get("incident", {}) or {}
+            anomalies = analysis.get("anomalies", []) or []
+
+            logger.info(
+                f"[Batch]{user_log} Result: {incident.get('title')} | {incident.get('severity')} | {len(anomalies)} anomalies"
             )
 
 
@@ -89,10 +199,11 @@ async def lifespan(app: FastAPI):
     logger.info(f"[Config] Current Time: {format_ist(now_ist())}")
     logger.info(f"[Config] Prometheus: {PROM_URL or 'NOT SET'}")
     
-    # LLM Provider logging
-    logger.info(f"[Config] LLM Provider: Google Gemini")
+    # LLM Configuration Logging
+    logger.info(f"[Config] LLM Provider: Gemini (Primary)")
     logger.info(f"[Config] GEMINI_MODEL: {os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')}")
-    logger.info(f"[Config] GEMINI_API_KEY: {'✅ Set' if (os.getenv('GEMINI_API_KEY') or '').strip() else '❌ NOT SET'}")
+    logger.info(f"[Config] GOOGLE_API_KEY: {'✅ Set' if (os.getenv('GOOGLE_API_KEY') or '').strip() else '❌ NOT SET'}")
+    logger.info(f"[Config] Fallback: Gemma3 (Local)")
     
     logger.info(f"[Config] MongoDB: {MONGO_URI[:30] if MONGO_URI else 'NOT SET'}...")
     logger.info(f"[Config] Batch Interval: {BATCH_INTERVAL_MINUTES} min")
