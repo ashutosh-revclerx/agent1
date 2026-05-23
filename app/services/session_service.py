@@ -4,7 +4,7 @@ Manages chat session lifecycle and metadata
 """
 import uuid
 from typing import Optional, Dict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from app.core.logging import logger
 
 
@@ -14,13 +14,14 @@ class SessionManager:
     def __init__(self):
         self.active_sessions = {}  # In-memory cache
 
-    def create_session(self, db) -> str:
-        """Create a new chat session"""
+    def create_session(self, db, user_id: str) -> str:
+        """Create a new chat session. user_id is required for ownership tracking."""
         session_id = str(uuid.uuid4())
         session_data = {
             "session_id": session_id,
-            "created_at": datetime.utcnow(),
-            "last_activity": datetime.utcnow(),
+            "user_id": user_id,
+            "created_at": datetime.now(timezone.utc),
+            "last_activity": datetime.now(timezone.utc),
             "message_count": 0,
             "total_tokens": 0,
         }
@@ -33,13 +34,20 @@ class SessionManager:
         self.active_sessions[session_id] = session_data
         return session_id
 
-    def get_session(self, session_id: str, db) -> Optional[Dict]:
-        """Get session by ID"""
+    def get_session(self, session_id: str, db, owner_id: str = None) -> Optional[Dict]:
+        """Get session by ID. Pass owner_id to enforce ownership."""
         if session_id in self.active_sessions:
-            return self.active_sessions[session_id]
+            cached = self.active_sessions[session_id]
+            # Enforce ownership on cached hit if owner_id provided
+            if owner_id and cached.get("user_id") != owner_id:
+                return None
+            return cached
         if db is not None:
             try:
-                session = db.chat_sessions.find_one({"session_id": session_id})
+                query = {"session_id": session_id}
+                if owner_id:
+                    query["user_id"] = owner_id
+                session = db.chat_sessions.find_one(query)
                 if session:
                     self.active_sessions[session_id] = session
                     return session
@@ -49,7 +57,7 @@ class SessionManager:
 
     def update_session(self, session_id: str, db, tokens: int = 0):
         """Update session activity"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if db is not None:
             try:
                 db.chat_sessions.update_one(
@@ -71,7 +79,7 @@ class SessionManager:
         """Remove sessions older than specified hours"""
         if db is None:
             return
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         try:
             result = db.chat_sessions.delete_many({"last_activity": {"$lt": cutoff}})
             if result.deleted_count > 0:
@@ -79,7 +87,7 @@ class SessionManager:
 
             to_remove = [
                 sid for sid, data in self.active_sessions.items()
-                if data.get("last_activity", datetime.utcnow()) < cutoff
+                if data.get("last_activity", datetime.now(timezone.utc)) < cutoff
             ]
             for sid in to_remove:
                 del self.active_sessions[sid]

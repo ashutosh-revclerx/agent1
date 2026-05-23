@@ -2,6 +2,8 @@
  * API Service
  * Fetch ALL database data (auto-pagination)
  */
+import { auth } from '../firebase';
+import { getIdToken } from 'firebase/auth';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -9,99 +11,62 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const DEFAULT_PAGE_SIZE = Number(import.meta.env.VITE_PAGE_SIZE || 500);
 const MAX_PAGES = Number(import.meta.env.VITE_MAX_PAGES || 500); // safety cap
 
-let isRefreshing = false;
-let refreshSubscribers = [];
-
-function subscribeTokenRefresh(cb) {
-  refreshSubscribers.push(cb);
-}
-
-function onTokenRefreshed(newToken) {
-  refreshSubscribers.forEach(cb => cb(newToken));
-  refreshSubscribers = [];
-}
-
-async function refreshAccessToken() {
-  const refreshToken = localStorage.getItem('refreshToken');
-  if (!refreshToken) {
-    throw new Error('No refresh token available');
+/**
+ * Get a fresh Firebase ID token.
+ * Reads the cached token from localStorage first; on 401 it re-fetches live.
+ */
+async function getFirebaseToken(forceRefresh = false) {
+  if (auth.currentUser) {
+    const token = await getIdToken(auth.currentUser, forceRefresh);
+    localStorage.setItem('token', token);
+    return token;
   }
-
-  const res = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refresh_token: refreshToken })
-  });
-
-  if (!res.ok) {
-    localStorage.removeItem('token');
-    localStorage.removeItem('refreshToken');
-    window.location.href = '/login';
-    throw new Error('Refresh token expired');
-  }
-
-  const data = await res.json();
-  localStorage.setItem('token', data.access_token);
-  return data.access_token;
+  // Fallback: try localStorage (set during login)
+  return localStorage.getItem('token');
 }
 
 async function fetchJson(url, opts = {}) {
-  // Add Authorization header if token exists
   const token = localStorage.getItem('token');
-  const headers = {
-    ...opts.headers,
-  };
+  const headers = { ...opts.headers };
 
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const res = await fetch(url, { ...opts, headers });
+  let res = await fetch(url, { ...opts, headers });
 
-  // Handle 401 Unauthorized - try to refresh token
+  // On 401: try a force-refresh of the Firebase ID token, then retry once
   if (res.status === 401) {
-    if (isRefreshing) {
-      // Wait for the ongoing refresh to complete
-      return new Promise((resolve) => {
-        subscribeTokenRefresh((newToken) => {
-          headers['Authorization'] = `Bearer ${newToken}`;
-          resolve(fetch(url, { ...opts, headers }).then(r => r.json()));
-        });
-      });
-    }
-
-    isRefreshing = true;
-
     try {
-      const newToken = await refreshAccessToken();
-      isRefreshing = false;
-      onTokenRefreshed(newToken);
-
-      // Retry original request with new token
-      headers['Authorization'] = `Bearer ${newToken}`;
-      const retryRes = await fetch(url, { ...opts, headers });
-
-      if (!retryRes.ok) {
-        const data = await retryRes.json().catch(() => ({}));
-        throw new Error(data.detail || `HTTP ${retryRes.status}`);
+      const newToken = await getFirebaseToken(true /* forceRefresh */);
+      if (newToken) {
+        headers['Authorization'] = `Bearer ${newToken}`;
+        res = await fetch(url, { ...opts, headers });
       }
-
-      return retryRes.json();
-    } catch (error) {
-      isRefreshing = false;
+    } catch (e) {
+      // Firebase token refresh failed — likely signed out
       localStorage.removeItem('token');
-      localStorage.removeItem('refreshToken');
       window.location.href = '/login';
-      throw error;
+      throw new Error('Session expired. Please log in again.');
     }
   }
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.detail || `HTTP ${res.status}`);
+    let errorMessage = data.detail || `HTTP ${res.status}`;
+
+    // Handle FastAPI validation error arrays (422)
+    if (Array.isArray(data.detail)) {
+      errorMessage = data.detail.map(e => `${e.loc.join('.')}: ${e.msg}`).join(', ');
+    } else if (typeof data.detail === 'object') {
+      errorMessage = JSON.stringify(data.detail);
+    }
+
+    throw new Error(errorMessage);
   }
   return res.json();
 }
+
 
 /**
  * Fetch all pages from an endpoint that supports:
@@ -176,7 +141,7 @@ export const api = {
   // ============ CHAT ENDPOINT ============
 
   async chat(payload) {
-    return fetchJson(`${API_BASE_URL}/api/chat`, {
+    return fetchJson(`${API_BASE_URL}/chat/query`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -268,6 +233,53 @@ export const api = {
     return fetchJson(`${API_BASE_URL}/langfuse/status`);
   },
 
+  // ============ LANGFUSE MONITOR ============
+
+  async getLangfuseWatchedUsers() {
+    return fetchJson(`${API_BASE_URL}/api/langfuse-monitor/watched-users`);
+  },
+
+  async addLangfuseWatchedUser(langfuse_user_id, label) {
+    return fetchJson(`${API_BASE_URL}/api/langfuse-monitor/watched-users`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ langfuse_user_id, label: label || langfuse_user_id }),
+    });
+  },
+
+  async removeLangfuseWatchedUser(langfuse_user_id) {
+    return fetchJson(
+      `${API_BASE_URL}/api/langfuse-monitor/watched-users/${encodeURIComponent(langfuse_user_id)}`,
+      { method: "DELETE" }
+    );
+  },
+
+  async getLangfuseStats(hours = 24, langfuse_user_id = null) {
+    const params = new URLSearchParams({ hours });
+    if (langfuse_user_id) params.append("langfuse_user_id", langfuse_user_id);
+    return fetchJson(`${API_BASE_URL}/api/langfuse-monitor/stats?${params}`);
+  },
+
+  async getLangfuseTraces(hours = 24, langfuse_user_id = null, limit = 50) {
+    const params = new URLSearchParams({ hours, limit });
+    if (langfuse_user_id) params.append("langfuse_user_id", langfuse_user_id);
+    return fetchJson(`${API_BASE_URL}/api/langfuse-monitor/traces?${params}`);
+  },
+
+  async getLangfuseRCA(hours = 24, langfuse_user_id = null) {
+    const params = new URLSearchParams({ hours });
+    if (langfuse_user_id) params.append("langfuse_user_id", langfuse_user_id);
+    return fetchJson(`${API_BASE_URL}/api/langfuse-monitor/rca?${params}`);
+  },
+
+  async runLangfuseRCA(hours = 1, langfuse_user_id = null) {
+    const params = new URLSearchParams({ hours });
+    if (langfuse_user_id) params.append("langfuse_user_id", langfuse_user_id);
+    return fetchJson(`${API_BASE_URL}/api/langfuse-monitor/rca/run?${params}`, {
+      method: "POST",
+    });
+  },
+
 
 
   async getBatches() {
@@ -342,6 +354,7 @@ export const api = {
     localStorage.removeItem('refreshToken');
   },
 
+
   async getCurrentUser() {
     return fetchJson(`${API_BASE_URL}/api/auth/me`);
   },
@@ -362,6 +375,40 @@ export const api = {
     return fetchJson(`${API_BASE_URL}/api/auth/sessions/revoke-all?keep_current=${keepCurrent}`, {
       method: 'POST'
     });
+  },
+
+  // ============ ALERT CONFIGURATION ============
+
+  async getEmailConfig() {
+    return fetchJson(`${API_BASE_URL}/agent/email-config`);
+  },
+
+  async updateEmailConfig(config) {
+    return fetchJson(`${API_BASE_URL}/agent/email-config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+  },
+
+  async sendTestEmail() {
+    return fetchJson(`${API_BASE_URL}/agent/test-email`, { method: 'POST' });
+  },
+
+  async getSlackConfig() {
+    return fetchJson(`${API_BASE_URL}/agent/slack-config`);
+  },
+
+  async updateSlackConfig(config) {
+    return fetchJson(`${API_BASE_URL}/agent/slack-config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+  },
+
+  async sendTestSlack() {
+    return fetchJson(`${API_BASE_URL}/agent/test-slack`, { method: 'POST' });
   },
 
   // ============ GRAFANA INTEGRATION ============

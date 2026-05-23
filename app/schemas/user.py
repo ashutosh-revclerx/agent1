@@ -13,10 +13,8 @@ class UserRegister(BaseModel):
     
     @field_validator('email')
     @classmethod
-    def validate_gmail_only(cls, v: str) -> str:
-        """Only allow gmail.com email addresses"""
-        if not v.lower().endswith('@gmail.com'):
-            raise ValueError('Only Gmail addresses (@gmail.com) are allowed for registration')
+    def validate_email_format(cls, v: str) -> str:
+        """Validate email format"""
         return v.lower()
 
 
@@ -53,6 +51,7 @@ class TokenData(BaseModel):
     """Token payload data"""
     user_id: Optional[str] = None
     username: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class User(BaseModel):
@@ -61,6 +60,7 @@ class User(BaseModel):
     username: str
     email: str
     active: bool = True
+    session_id: Optional[str] = None
 
 
 class SessionResponse(BaseModel):

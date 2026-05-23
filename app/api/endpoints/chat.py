@@ -1,61 +1,139 @@
 """
-Chat Routes
-AI chat endpoints with session management
+Chat API Endpoints
+Enables external chatbots (LibreChat) to query the system with session context.
 """
-import asyncio
-from fastapi import APIRouter
-from app.schemas.chat import ChatMessage, ChatResponse
-from app.services.mongodb_service import get_db
-from app.services.session_service import session_manager
-from app.services.llm_service import ask_llm
+import os
+import json
+from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException, Body, Header, Query
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import Optional, Literal
+
+from app.core.auth import get_current_user_optional
+from app.schemas.user import User
+from app.services.chat_service import chat_service
 from app.core.logging import logger
+from app.services.mongodb_service import get_db
 
-router = APIRouter()
+router = APIRouter(prefix="/chat", tags=["chat"])
+
+_SYSTEM_USER = User(id="librechat_system", username="librechat", email="librechat@system", active=True)
+
+_SYSTEM_USER_ID = "librechat_system"  # sentinel: skip per-user scoping for this caller
 
 
-@router.post("/api/chat", response_model=ChatResponse)
-async def chat_endpoint(message: ChatMessage):
+def _scoped_user_id(user: User) -> str | None:
+    """Return user.id for per-user DB scoping, or None for the system/LibreChat user."""
+    return None if user.id == _SYSTEM_USER_ID else user.id
+
+
+async def get_chat_user(
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key: Optional[str] = Query(None),           # fallback for query-string auth
+    current_user: Optional[User] = Depends(get_current_user_optional)
+) -> User:
+    """Accept JWT, header API Key, or query-string API Key. Strictly enforced."""
+    if current_user:
+        return current_user
+
+    valid_api_key = os.getenv("LIBRECHAT_API_KEY", "librechat_dev_key")
+    provided = x_api_key or api_key
+    if provided:
+        if provided == valid_api_key:
+            return _SYSTEM_USER
+        masked = provided[:4] + "***" if len(provided) > 4 else "***"
+        logger.warning(f"[Chat] Invalid API key attempted: {masked}")
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+
+    logger.warning("[Chat] No valid authentication provided")
+    raise HTTPException(status_code=401, detail="Authentication required")
+
+
+class ChatQuery(BaseModel):
+    session_id: str
+    type: Literal["monitoring", "langfuse"]
+    message: str
+
+
+class LatestQuery(BaseModel):
+    message: str = "Give me a full system health summary"
+
+
+@router.post("/query")
+async def query_chat(
+    query: ChatQuery,
+    current_user: User = Depends(get_chat_user)
+):
     """
-    Chat with AI assistant
-    Maintains conversation context through sessions
+    Query the LLM about a specific monitoring or Langfuse session.
+    Fetches full context (metrics, anomalies, RCA, traces) before answering.
+    """
+    try:
+        logger.info(f"[Chat] Session query: type={query.type} session={query.session_id} user={current_user.id}")
+        response = await chat_service.query_session(
+            session_id=query.session_id,
+            context_type=query.type,
+            user_id=_scoped_user_id(current_user),
+            message=query.message,
+        )
+        if not response:
+            raise HTTPException(status_code=500, detail="LLM returned no response")
+        return {"response": response, "session_id": query.session_id, "type": query.type}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Chat] Query error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/latest")
+async def query_latest(
+    body: LatestQuery = Body(default_factory=LatestQuery),
+    current_user: User = Depends(get_chat_user)
+):
+    """
+    Query the LLM about the MOST RECENT system state without needing a session ID.
+    Returns an AI-generated health summary based on the latest monitoring incident 
+    and Langfuse RCA. Use this for 'What is the current system health?' style questions.
+    """
+    try:
+        logger.info(f"[Chat] Latest query by user={current_user.id}: {body.message[:60]}")
+        response = await chat_service.query_latest(
+            user_id=_scoped_user_id(current_user),
+            message=body.message,
+        )
+        if not response:
+            raise HTTPException(status_code=500, detail="LLM returned no response")
+        return {"response": response, "type": "latest_snapshot"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Chat] Latest query error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/sessions")
+async def list_sessions(
+    limit: int = Query(5, ge=1, le=20),
+    current_user: User = Depends(get_chat_user)
+):
+    """
+    List the most recent monitoring and Langfuse sessions.
+    Returns sessions enriched with severity, anomaly counts, health scores, and error rates.
+    Call this first to discover session IDs before calling /chat/query.
     """
     db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    result = chat_service.list_recent_sessions(db, limit, user_id=_scoped_user_id(current_user))
+    return result
 
-    session_id = message.session_id
-    if not session_id or not session_manager.get_session(session_id, db):
-        session_id = session_manager.create_session(db)
-        logger.info(f"[Chat] New conversation session: {session_id}")
-    else:
-        logger.info(f"[Chat] Continuing session: {session_id}")
 
-    context_str = ""
-    if message.context:
-        context_lines = ["Context:"]
-        for k, v in message.context.items():
-            if k != "session_id":
-                context_lines.append(f"- {k}: {v}")
-        context_str = "\n".join(context_lines)
-
-    prompt = f"""You are a helpful DevOps assistant.
-User asks: {message.message}
-
-{context_str}
-
-Provide a helpful, concise answer. Explain technical concepts simply if asked."""
-
-    result = await asyncio.get_event_loop().run_in_executor(
-        None,
-        ask_llm,
-        prompt,
-        "AI Chat",
-        {"user_message": message.message, **message.context},
-        session_id,
-    )
-
-    response_text, tokens = result if result else (None, 0)
-    session_manager.update_session(session_id, db, tokens)
-
-    return {
-        "response": response_text or "Sorry, I'm having trouble connecting to the AI service.",
-        "session_id": session_id,
-    }
+@router.get("/openapi.json", include_in_schema=False)
+async def chat_openapi_spec():
+    """Serve the LibreChat-compatible OpenAPI Actions spec."""
+    spec_path = Path(__file__).parents[3] / "LibreChat" / "monitoring-actions.json"
+    if not spec_path.exists():
+        raise HTTPException(status_code=404, detail="OpenAPI spec not found")
+    return JSONResponse(content=json.loads(spec_path.read_text()))

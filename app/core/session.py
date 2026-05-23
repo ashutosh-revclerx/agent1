@@ -69,12 +69,13 @@ def validate_session(session_id: str, user_id: str) -> bool:
     
     if session:
         # Update last active time
+        current_time = now_ist()
         db.sessions.update_one(
             {"session_id": session_id},
             {
                 "$set": {
-                    "last_active": now_ist(),
-                    "last_active_str": format_ist(now_ist(), include_tz=True)
+                    "last_active": current_time,
+                    "last_active_str": format_ist(current_time, include_tz=True)
                 }
             }
         )

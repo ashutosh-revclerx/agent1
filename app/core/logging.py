@@ -3,6 +3,7 @@ Logging Configuration
 Multi-file logging handler for different log levels
 """
 import io
+import os
 import sys
 import logging
 
@@ -12,13 +13,14 @@ class MultiFileHandler(logging.Handler):
 
     def __init__(self):
         super().__init__()
-        self.error_handler = logging.FileHandler("error.log", encoding="utf-8")
+        os.makedirs("logs", exist_ok=True)
+        self.error_handler = logging.FileHandler("logs/error.log", encoding="utf-8")
         self.error_handler.setLevel(logging.ERROR)
 
-        self.debug_handler = logging.FileHandler("debug.log", encoding="utf-8")
+        self.debug_handler = logging.FileHandler("logs/debug.log", encoding="utf-8")
         self.debug_handler.setLevel(logging.DEBUG)
 
-        self.info_handler = logging.FileHandler("app.log", encoding="utf-8")
+        self.info_handler = logging.FileHandler("logs/app.log", encoding="utf-8")
         self.info_handler.setLevel(logging.INFO)
 
         formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
